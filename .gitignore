@@ -1,0 +1,42 @@
+# Xcode
+## User settings
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+
+## Build generated
+build/
+DerivedData/
+*.moved-aside
+*.xccheckout
+
+# Swift Package Manager
+.build/
+Packages/
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# Temporary / Backup files
+*~
+*.swp
+*.bak
+*.tmp
+
+# Test suite data & benchmark datasets
+Dataset/
