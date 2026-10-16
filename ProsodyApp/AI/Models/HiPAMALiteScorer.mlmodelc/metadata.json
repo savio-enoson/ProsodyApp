@@ -1,0 +1,133 @@
+[
+  {
+    "shortDescription" : "HiPAMA-Lite Phone-to-Word Sequence Scorer on CoreML",
+    "metadataOutputVersion" : "3.0",
+    "outputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float32",
+        "formattedType" : "MultiArray (Float32 1 × 1)",
+        "shortDescription" : "",
+        "shape" : "[1, 1]",
+        "name" : "word_score",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float32",
+        "formattedType" : "MultiArray (Float32 1 × 1)",
+        "shortDescription" : "",
+        "shape" : "[1, 1]",
+        "name" : "error_logit",
+        "type" : "MultiArray"
+      }
+    ],
+    "version" : "1.0",
+    "modelParameters" : [
+
+    ],
+    "author" : "Prosody AI",
+    "specificationVersion" : 7,
+    "storagePrecision" : "Mixed (Float16, Float32)",
+    "mlProgramOperationTypeHistogram" : {
+      "Transpose" : 2,
+      "Squeeze" : 9,
+      "Ios16.gather" : 10,
+      "Ios16.softmax" : 1,
+      "Ios16.linear" : 32,
+      "Ios16.add" : 21,
+      "Concat" : 4,
+      "Ios16.sigmoid" : 9,
+      "Ios16.reduceSum" : 1,
+      "Reverse" : 4,
+      "ExpandDims" : 5,
+      "WhileLoop" : 4,
+      "Ios16.sub" : 5,
+      "Ios16.cast" : 19,
+      "Ios16.less" : 4,
+      "Ios16.gelu" : 4,
+      "Ios16.tanh" : 5,
+      "SliceByIndex" : 4,
+      "Ios16.scatter" : 4,
+      "Ios16.mul" : 15
+    },
+    "computePrecision" : "Mixed (Float16, Float32, Int32)",
+    "stateSchema" : [
+
+    ],
+    "isUpdatable" : "0",
+    "availability" : {
+      "macOS" : "13.0",
+      "tvOS" : "16.0",
+      "visionOS" : "1.0",
+      "watchOS" : "9.0",
+      "iOS" : "16.0",
+      "macCatalyst" : "16.0"
+    },
+    "modelType" : {
+      "name" : "MLModelType_mlProgram"
+    },
+    "inputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Int32",
+        "formattedType" : "MultiArray (Int32 1 × 16)",
+        "shortDescription" : "",
+        "shape" : "[1, 16]",
+        "name" : "target_ids",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Int32",
+        "formattedType" : "MultiArray (Int32 1 × 16)",
+        "shortDescription" : "",
+        "shape" : "[1, 16]",
+        "name" : "comp_ids",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float32",
+        "formattedType" : "MultiArray (Float32 1 × 16 × 8)",
+        "shortDescription" : "",
+        "shape" : "[1, 16, 8]",
+        "name" : "phone_feats",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float32",
+        "formattedType" : "MultiArray (Float32 1 × 16)",
+        "shortDescription" : "",
+        "shape" : "[1, 16]",
+        "name" : "phone_mask",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float32",
+        "formattedType" : "MultiArray (Float32 1 × 19)",
+        "shortDescription" : "",
+        "shape" : "[1, 19]",
+        "name" : "word_feats",
+        "type" : "MultiArray"
+      }
+    ],
+    "userDefinedMetadata" : {
+      "com.github.apple.coremltools.conversion_date" : "2026-10-16",
+      "com.github.apple.coremltools.source" : "torch==2.14.0",
+      "com.github.apple.coremltools.version" : "9.0",
+      "com.github.apple.coremltools.source_dialect" : "TorchScript"
+    },
+    "generatedClassName" : "HiPAMALiteScorer",
+    "method" : "predict"
+  }
+]

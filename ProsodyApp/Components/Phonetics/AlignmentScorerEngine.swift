@@ -12,6 +12,8 @@ nonisolated struct PhoneScore: Identifiable {
     var topCompetitorMass: Float = 0.0
     var topCompetitorSymbol: String = ""
     var posteriorMargin: Float = 0.0
+    var unnormalizedMargin: Float = 0.0
+    var articulatoryDistance: Float = 0.0
 }
 
 nonisolated struct WordScore: Identifiable {
@@ -100,54 +102,54 @@ nonisolated class AlignmentScorerEngine {
     // Phonemic vowel contrasts (minimal pairs like /iː/ vs /ɪ/, /uː/ vs /ʊ/, /eɪ/ vs /ɛ/) are NEVER conflated.
     static let allophonicExpansions: [String: [String]] = [
         "t": ["t", "tʰ", "ɾ", "ʔ", "t̪", "tː"],
-        "d": ["d", "dʰ", "ɾ", "d̪", "dː", "t", "ʔ"],
+        "d": ["d", "dʰ", "ɾ", "d̪", "dː", "ʔ"],
         "k": ["k", "kʰ", "kʲ", "kː", "c"],
-        "ɡ": ["ɡ", "ɡʰ", "ɡʲ", "ɡː", "k", "ɡ̊", "ʔ"],
+        "ɡ": ["ɡ", "ɡʰ", "ɡʲ", "ɡː", "ɡ̊", "ʔ"],
         "p": ["p", "pʰ", "pʲ", "pː"],
-        "b": ["b", "bʰ", "bʲ", "bː", "p"],
+        "b": ["b", "bʰ", "bʲ", "bː"],
         "iː": ["iː", "i"],
-        "i": ["i", "iː", "ɪ", "ɨ", "ᵻ", "ə"],
-        "ɪ": ["ɪ", "ᵻ", "ɨ", "i", "ɛ̃"],
-        "eɪ": ["eɪ", "e", "eː", "ɛ"],
+        "i": ["i", "iː"],
+        "ɪ": ["ɪ", "ᵻ", "ɨ", "ɛ̃"],
+        "eɪ": ["eɪ", "e", "eː"],
         "ɛ": ["ɛ", "ɛː", "e", "ɛ̃"],
-        "æ": ["æ", "a", "ɑ", "ɛ̃", "ɑ̃"],
-        "ɑː": ["ɑː", "ɑ", "a", "ɑ̃", "ɒ", "ɔ"],
-        "ɔː": ["ɔː", "ɔ", "oː", "ɒ", "ɔ̃", "ɑː", "ɑ"],
-        "ɔ": ["ɔ", "ɔː", "ɒ", "ɔ̃", "ɑː"],
-        "ɒ": ["ɒ", "ɔ", "ɔː", "ɑː", "ɑ", "ʌ"],
-        "oʊ": ["oʊ", "əʊ", "o", "oː", "ɔ"],
+        "æ": ["æ", "a", "ɛ̃", "ɑ̃"],
+        "ɑː": ["ɑː", "ɑ", "a", "ɑ̃", "ɒ"],
+        "ɔː": ["ɔː", "ɔ", "oː", "ɒ", "ɔ̃"],
+        "ɔ": ["ɔ", "ɔː", "ɒ", "ɔ̃"],
+        "ɒ": ["ɒ", "ɔ", "ɔː", "ɑ"],
+        "oʊ": ["oʊ", "əʊ", "o", "oː"],
         "əʊ": ["əʊ", "oʊ", "o"],
-        "ʊ": ["ʊ", "u", "o"],
+        "ʊ": ["ʊ", "u"],
         "uː": ["uː", "u", "ʉ"],
-        "u": ["u", "uː", "ʊ", "ʉ"],
+        "u": ["u", "uː", "ʉ"],
         "ʌ": ["ʌ", "ɐ", "ə", "a", "ɑ̃"],
         "ə": ["ə", "ʌ", "ɐ"],
-        "ɜː": ["ɜː", "ɝ", "ɜ", "ə", "ɚ", "ər", "ɛ", "ɐ"],
-        "aɪ": ["aɪ", "ai", "a", "ɑː", "ɑ"],
-        "aʊ": ["aʊ", "au", "a", "ɑː", "ɑ"],
+        "ɜː": ["ɜː", "ɝ", "ɜ", "ə", "ɚ", "ər", "ɐ"],
+        "aɪ": ["aɪ", "ai", "a", "ɑː"],
+        "aʊ": ["aʊ", "au", "a", "ɑː"],
         "ɔɪ": ["ɔɪ", "oɪ", "ɔ"],
-        "iə": ["iə", "ɪɹ", "iː", "ɪ"],
-        "eə": ["eə", "ɛɹ", "ɛ", "eɪ"],
-        "ʊə": ["ʊə", "ʊɹ", "ʊ", "uː"],
+        "iə": ["iə", "ɪɹ", "iː"],
+        "eə": ["eə", "ɛɹ"],
+        "ʊə": ["ʊə", "ʊɹ", "ʊ"],
         "ər": ["ər", "ɚ"],
         "ɚ": ["ɚ", "ər"],
-        "ɛɹ": ["ɛɹ", "eə", "ɛ", "eɪ", "ɚ"],
-        "ɪɹ": ["ɪɹ", "iə", "ɪ", "iː"],
-        "ʊɹ": ["ʊɹ", "ʊə", "ʊ", "uː"],
+        "ɛɹ": ["ɛɹ", "eə", "ɛ", "ɚ"],
+        "ɪɹ": ["ɪɹ", "iə", "ɪ"],
+        "ʊɹ": ["ʊɹ", "ʊə", "ʊ"],
         "l": ["l", "əl", "l̩"],
         "əl": ["əl", "l", "l̩", "ə"],
         "ən": ["ən", "n", "n̩", "ə"],
         "əm": ["əm", "m", "ə"],
-        "ɹ": ["ɹ", "ɚ", "ɻ", "ɾ", "w"],
-        "θ": ["θ", "t̪", "t"],
-        "ð": ["ð", "d̪", "d", "ɾ"],
-        "z": ["z", "s"],
+        "ɹ": ["ɹ", "ɚ", "ɻ"],
+        "θ": ["θ", "t̪"],
+        "ð": ["ð", "d̪"],
+        "z": ["z"],
         "s": ["s"],
-        "v": ["v", "vʲ", "ʋ", "f"],
+        "v": ["v", "vʲ", "ʋ"],
         "f": ["f"],
         "w": ["w", "u"],
         "j": ["j", "i"],
-        "ŋ": ["ŋ", "n", "n̩"],
+        "ŋ": ["ŋ", "n̩"],
         "m": ["m"],
         "n": ["n"],
         "ʃ": ["ʃ", "ɕ", "ʂ"],
@@ -393,7 +395,7 @@ nonisolated class AlignmentScorerEngine {
         for k in 0..<M {
             let s = 2 * k + 1
             let symbolWithStress = targets[k]
-            let stress = symbolWithStress.last?.wholeNumberValue ?? 1
+            let stress = symbolWithStress.contains("ˈ") ? 1 : (symbolWithStress.contains("ˌ") ? 2 : (symbolWithStress.last?.wholeNumberValue ?? 0))
             let symbol = symbolWithStress.trimmingCharacters(in: .decimalDigits)
                 .replacingOccurrences(of: "ˈ", with: "")
                 .replacingOccurrences(of: "ˌ", with: "")
@@ -448,13 +450,10 @@ nonisolated class AlignmentScorerEngine {
             let rawScore = sumGammaLin > 0.001 ? exp(sumLogP / sumGammaLin) : 0.0
             var calibratedScore = rawScore
             let stats = AlignmentScorerEngine.nativeCalibration[symbol] ?? (mean: 0.72, std: 0.22)
-            let ratio = max(0.0, min(1.0, rawScore / stats.mean))
-            if ratio >= 1.0 {
-                calibratedScore = 1.0
-            } else {
-                let exponent: Float = (stress == 0) ? 0.50 : 0.65
-                calibratedScore = pow(ratio, exponent)
-            }
+            let z = (rawScore - stats.mean) / max(0.05, stats.std)
+            let a: Float = 1.116
+            let b: Float = (stress == 0) ? 1.50 : 1.735
+            calibratedScore = 1.0 / (1.0 + exp(-(a * z + b)))
             
             // Proportional penalty for deleted / truncated phonemes with < 1 frame duration
             if sumGammaLin < 1.0 {
@@ -570,7 +569,9 @@ nonisolated class AlignmentScorerEngine {
                             targetMass: 0.0,
                             topCompetitorMass: maxInsertMass,
                             topCompetitorSymbol: actualSymbol,
-                            posteriorMargin: -5.0
+                            posteriorMargin: -5.0,
+                            unnormalizedMargin: -5.0,
+                            articulatoryDistance: 1.0
                         )
                     }
                 }
@@ -578,6 +579,7 @@ nonisolated class AlignmentScorerEngine {
             
             let totalFramesForPhone = Int(round(sumGammaLin + blankGammaSum))
             let postMarginFinal = (sumGammaLin < 0.8) ? -5.0 : posteriorMargin
+            let articDist = FunctionalLoadMatrix.penaltyFactor(expected: symbol, competitor: topCompetitorSymbol)
             metrics.append(PhoneScore(
                 symbol: symbolWithStress,
                 gopScore: calibratedScore,
@@ -587,7 +589,9 @@ nonisolated class AlignmentScorerEngine {
                 targetMass: expectedMass,
                 topCompetitorMass: maxActualMass,
                 topCompetitorSymbol: topCompetitorSymbol,
-                posteriorMargin: postMarginFinal
+                posteriorMargin: postMarginFinal,
+                unnormalizedMargin: rawMargin,
+                articulatoryDistance: articDist
             ))
             if let ins = insertionPhoneScore {
                 metrics.append(ins)
@@ -612,7 +616,9 @@ nonisolated class AlignmentScorerEngine {
                         targetMass: metrics[k].targetMass,
                         topCompetitorMass: metrics[k].topCompetitorMass,
                         topCompetitorSymbol: metrics[k].topCompetitorSymbol,
-                        posteriorMargin: metrics[k].posteriorMargin
+                        posteriorMargin: metrics[k].posteriorMargin,
+                        unnormalizedMargin: metrics[k].unnormalizedMargin,
+                        articulatoryDistance: metrics[k].articulatoryDistance
                     )
                 }
             }

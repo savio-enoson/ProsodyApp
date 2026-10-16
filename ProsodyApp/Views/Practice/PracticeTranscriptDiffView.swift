@@ -25,8 +25,13 @@ struct PracticeTranscriptDiffView: View {
                         .foregroundColor(.secondary)
 
                     let diffCount = viewModel.transcriptWords.filter(\.hasDifference).count
-                    if !isListeningActive && diffCount > 0 {
-                        CatalystBadge("\(diffCount) Whisper alt\(diffCount == 1 ? "" : "s")", variant: .warning)
+                    let uncertainCount = viewModel.transcriptWords.filter(\.isUncertain).count
+                    if !isListeningActive {
+                        if uncertainCount > 0 {
+                            CatalystBadge("\(uncertainCount) to review", variant: .warning)
+                        } else if diffCount > 0 {
+                            CatalystBadge("\(diffCount) Neural alt\(diffCount == 1 ? "" : "s")", variant: .warning)
+                        }
                     }
 
                     Spacer()
@@ -34,8 +39,7 @@ struct PracticeTranscriptDiffView: View {
                     if !isListeningActive && !history.isEmpty {
                         CatalystButton(viewModel.isDirectEditing ? "Done" : "Edit Text", role: viewModel.isDirectEditing ? .primary : .default) {
                             if viewModel.isDirectEditing {
-                                viewModel.isDirectEditing = false
-                                viewModel.onEditableTextChanged(to: viewModel.editableTranscriptText)
+                                viewModel.commitDirectEdit()
                             } else {
                                 viewModel.editableTranscriptText = viewModel.committedTranscript
                                 viewModel.isDirectEditing = true
@@ -98,9 +102,9 @@ struct PracticeTranscriptDiffView: View {
                         }
                     } else if !viewModel.transcriptWords.isEmpty {
                         FlowLayout(spacing: 5) {
-                            ForEach(Array(viewModel.transcriptWords.enumerated()), id: \.offset) { index, word in
+                            ForEach(viewModel.transcriptWords) { word in
                                 TranscriptWordItemView(word: word) { replacement in
-                                    viewModel.swapWord(at: index, with: replacement)
+                                    viewModel.swapWord(id: word.id, with: replacement)
                                 }
                             }
                         }

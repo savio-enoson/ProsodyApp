@@ -7,9 +7,10 @@ import Accelerate
 class AudioEngine: ObservableObject {
     private let audioEngine = AVAudioEngine()
     
-    private let maxAudioSeconds: Float = 5.0
-    private let overlapSeconds: Float = 1.5
-    private var sampleBuffer = [Float]()
+    // Unified Robust Turn Segmenter & Neural VAD
+    private let turnSegmenter = TurnSegmenter(sampleRate: 16000)
+    private let neuralVAD = NeuralVADFilter()
+    private var liveAccumulator = [Float]()
     
     @Published var isSpeaking = false
     @Published var currentAudioChunk: [Float]? = nil
@@ -18,13 +19,7 @@ class AudioEngine: ObservableObject {
     @Published var currentRMS: Float = 0.0
     @Published var lastChunkTimeRange: (start: TimeInterval, end: TimeInterval)? = nil
     
-    // Adaptive VAD
-    private var noiseFloor: Float = 0.001
-    private var silenceFrames = 0
-    private let maxSilenceFrames = 20 // 600ms
     private var lastLiveEmitIndex = 0
-    private var sessionStartTime: CFAbsoluteTime? = nil
-    private var currentTurnStartTime: CFAbsoluteTime? = nil
     private var lastRMSUpdateTime: CFAbsoluteTime = 0.0
     
     private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
@@ -40,9 +35,10 @@ class AudioEngine: ObservableObject {
     func start() {
         guard !isRecording else { return }
         
-        sessionStartTime = CFAbsoluteTimeGetCurrent()
-        currentTurnStartTime = nil
         lastChunkTimeRange = nil
+        turnSegmenter.reset()
+        neuralVAD.reset()
+        turnSegmenter.neuralFilter = neuralVAD
         
         SFSpeechRecognizer.requestAuthorization { _ in }
         
@@ -54,14 +50,13 @@ class AudioEngine: ObservableObject {
             return
         }
         
-        // Target format is 16kHz mono Float32 for Wav2Vec2 and Whisper.
-        // AVAudioFormat(commonFormat:sampleRate:channels:interleaved:) returns nil if channels > 2,
-        // so targetFormat must always be 1-channel mono.
+        // Target format is 16kHz mono Float32 for Wav2Vec2 and Nemotron.
         guard let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false) else {
             print("AudioEngine: Failed to create 16kHz mono target format")
             return
         }
         self.targetFormat = targetFormat
+        neuralVAD.setup(format: targetFormat)
         
         guard let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
             print("AudioEngine: Failed to create AVAudioConverter from \(inputFormat) to \(targetFormat)")
@@ -75,7 +70,7 @@ class AudioEngine: ObservableObject {
         let tapBlock: AVAudioNodeTapBlock = { [weak self] buffer, time in
             guard let self = self, let targetFormat = self.targetFormat, let converter = self.audioConverter else { return }
             
-            // 1. Send native buffer to Apple's SFSpeechRecognizer (works flawlessly)
+            // 1. Send native buffer to Apple's SFSpeechRecognizer
             if self.isSpeaking {
                 self.recognitionRequest?.append(buffer)
             }
@@ -97,6 +92,7 @@ class AudioEngine: ObservableObject {
             }
             
             if error == nil {
+                self.neuralVAD.analyze(buffer: convertedBuffer)
                 self.processBuffer(convertedBuffer)
             }
         }
@@ -125,8 +121,17 @@ class AudioEngine: ObservableObject {
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
         
+        let flushedTurns = turnSegmenter.flush()
+        
         DispatchQueue.main.async {
-            self.flushBuffer(isSilence: true)
+            if let last = flushedTurns.last {
+                self.currentAudioChunk = last.samples
+                self.lastChunkTimeRange = (start: last.startTime, end: last.endTime)
+            }
+            self.isSpeaking = false
+            self.stopLiveTranscription()
+            self.liveAccumulator.removeAll()
+            self.lastLiveEmitIndex = 0
         }
     }
     
@@ -172,103 +177,45 @@ class AudioEngine: ObservableObject {
         vDSP_measqv(channelData, 1, &meanSquare, vDSP_Length(frameLength))
         let rms = sqrt(meanSquare)
         
-        // CRITICAL: Extract floats to a Swift array BEFORE async dispatch.
-        // If we don't do this, the AVAudioPCMBuffer is deallocated by the time
-        // the async block runs, and the channelData pointer becomes a dangling pointer!
+        // Extract floats to a Swift array before async dispatch
         let bufferPointer = UnsafeBufferPointer(start: channelData, count: frameLength)
         let floatArray = Array(bufferPointer)
         
+        let completedTurns = turnSegmenter.append(samples: floatArray)
+        let isSegmenterSpeaking = turnSegmenter.isSpeechActive
+        
         let now = CFAbsoluteTimeGetCurrent()
         DispatchQueue.main.async {
-            // Throttle published RMS updates to ~12.5 Hz (every 80ms) to avoid SwiftUI view thrashing
+            // Throttle published RMS updates to ~12.5 Hz (every 80ms)
             if now - self.lastRMSUpdateTime >= 0.08 || self.isSpeaking {
                 self.currentRMS = rms
                 self.lastRMSUpdateTime = now
             }
             
-            if !self.isSpeaking {
-                if rms < self.noiseFloor {
-                    self.noiseFloor = rms
-                } else {
-                    self.noiseFloor = self.noiseFloor * 0.95 + rms * 0.05
-                }
-            }
-            
-            let dynamicThreshold = max(0.01, self.noiseFloor * 2.0)
-            
-            if rms > dynamicThreshold {
+            if isSegmenterSpeaking {
                 if !self.isSpeaking {
                     self.isSpeaking = true
-                    self.currentTurnStartTime = CFAbsoluteTimeGetCurrent()
                     self.liveTranscript = ""
                     self.startLiveTranscription()
-                }
-                self.silenceFrames = 0
-            } else {
-                if self.isSpeaking {
-                    self.silenceFrames += 1
-                }
-            }
-            
-            if self.isSpeaking {
-                if !self.audioEngine.isRunning {
-                    self.recognitionRequest?.append(buffer)
-                }
-                self.sampleBuffer.append(contentsOf: floatArray)
-                
-                // Emit live chunk every 0.5s (8000 frames)
-                if self.sampleBuffer.count - self.lastLiveEmitIndex >= 8000 {
-                    self.liveAudioChunk = self.sampleBuffer
-                    self.lastLiveEmitIndex = self.sampleBuffer.count
+                    self.liveAccumulator.removeAll()
                 }
                 
-                if self.silenceFrames >= self.maxSilenceFrames {
-                    self.flushBuffer(isSilence: true)
-                } else if self.sampleBuffer.count >= 16000 * 15 {
-                    // Safety check: if continuous speech exceeds 15 seconds without a silence pause,
-                    // flush via sliding window to retain context and prevent excessive buffer accumulation
-                    self.flushBuffer(isSilence: false)
+                self.liveAccumulator.append(contentsOf: floatArray)
+                // Emit live chunk every 0.5s (8000 frames) for UI visualization & Nemotron live stream
+                if self.liveAccumulator.count - self.lastLiveEmitIndex >= 8000 {
+                    self.liveAudioChunk = self.liveAccumulator
+                    self.lastLiveEmitIndex = self.liveAccumulator.count
                 }
             }
-        }
-    }
-    
-    private func flushBuffer(isSilence: Bool) {
-        let now = CFAbsoluteTimeGetCurrent()
-        let sess0 = self.sessionStartTime ?? now
-        let fallbackStart = now - (Double(self.sampleBuffer.count) / 16000.0)
-        let tStart = max(0.0, (self.currentTurnStartTime ?? fallbackStart) - sess0)
-        let tEnd = max(tStart, now - sess0)
-        self.lastChunkTimeRange = (start: tStart, end: tEnd)
-        self.currentTurnStartTime = nil
-
-        if isSilence {
-            // Trim trailing silence frames accumulated during silence detection
-            let trailingSilenceSamples = min(self.silenceFrames * 1024, self.sampleBuffer.count)
-            let speechSampleCount = self.sampleBuffer.count - trailingSilenceSamples
-            if speechSampleCount > 4000 { 
-                self.currentAudioChunk = Array(self.sampleBuffer.prefix(speechSampleCount))
-            } else if self.sampleBuffer.count > 4000 {
-                self.currentAudioChunk = self.sampleBuffer
-            }
             
-            self.sampleBuffer.removeAll()
-            self.isSpeaking = false
-            self.stopLiveTranscription()
-            self.silenceFrames = 0
-            self.lastLiveEmitIndex = 0
-        } else {
-            if self.sampleBuffer.count > 4000 { 
-                self.currentAudioChunk = self.sampleBuffer
+            for turn in completedTurns {
+                self.currentAudioChunk = turn.samples
+                self.lastChunkTimeRange = (start: turn.startTime, end: turn.endTime)
+                self.isSpeaking = false
+                self.stopLiveTranscription()
+                self.liveAccumulator.removeAll()
+                self.lastLiveEmitIndex = 0
             }
-            // Sliding Window: Retain the last 1.5 seconds as prefix context for the next chunk
-            let retainSamples = Int(self.overlapSeconds * 16000.0)
-            if self.sampleBuffer.count > retainSamples {
-                self.sampleBuffer = Array(self.sampleBuffer.suffix(retainSamples))
-            }
-            self.lastLiveEmitIndex = 0
-            
-            // Note: During sliding window, we DO NOT stop live transcription so it continues seamlessly!
         }
     }
 }

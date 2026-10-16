@@ -57,6 +57,28 @@ final class SessionEvaluationManager: ObservableObject {
         currentSession?.utterances.append(record)
     }
 
+    /// Updates an existing utterance record (e.g. after user edits transcript or re-evaluates bit-by-bit).
+    func updateUtterance(
+        at index: Int,
+        transcript: String,
+        scoringResult: ScoringResult?,
+        fluencyResult: FluencyResult?
+    ) {
+        guard var session = currentSession, index >= 0, index < session.utterances.count else { return }
+        let old = session.utterances[index]
+        let updated = UtteranceRecord(
+            transcript: transcript,
+            scoringResult: scoringResult ?? old.scoringResult,
+            fluencyResult: fluencyResult ?? old.fluencyResult,
+            wordTimestamps: old.wordTimestamps,
+            audioURL: old.audioURL,
+            startTime: old.startTime,
+            endTime: old.endTime
+        )
+        session.utterances[index] = updated
+        currentSession = session
+    }
+
     /// Finalizes the active practice session and returns the aggregated record.
     @discardableResult
     func finishSession() -> SessionRecord? {

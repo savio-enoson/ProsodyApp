@@ -5,6 +5,7 @@ import Speech
 class Evaluator {
     let inferenceEngine: InferenceEngine
     private let sfSpeechLock = NSLock()
+    private let nemotronLock = NSLock()
     private let logLock = NSLock()
     
     struct Sample: Codable {
@@ -322,33 +323,26 @@ class Evaluator {
         var overallFluencyTracker = EvaluationMetricsTracker()
         var childFluencyTracker = EvaluationMetricsTracker()
         var adultFluencyTracker = EvaluationMetricsTracker()
+        var skillLevelTrackers: [String: EvaluationMetricsTracker] = [:]
         
-        let sttEngine = ProcessInfo.processInfo.environment["EVAL_STT_ENGINE"] ?? "acousticMirror"
-        let useWhisper = (sttEngine.lowercased() == "whisperkit" || sttEngine.lowercased() == "whisper")
-        
-        let modelVariant: WhisperModelVariant = {
-            let envModel = ProcessInfo.processInfo.environment["EVAL_WHISPER_MODEL"]?.lowercased()
-            if envModel == "tiny" {
-                return .tiny
-            }
-            return .base
-        }()
+        let sttEngine = ProcessInfo.processInfo.environment["EVAL_STT_ENGINE"] ?? "nemotron"
+        let useNemotron = (sttEngine.lowercased() == "nemotron" || sttEngine.lowercased() == "whisperkit" || sttEngine.lowercased() == "whisper")
         
         let enableWhisperEnsemble = ProcessInfo.processInfo.environment["EVAL_WHISPER_ENSEMBLE"] == "1"
         let enableDecoupledScoring = ProcessInfo.processInfo.environment["EVAL_DECOUPLED_SCORING"] == "1"
         
         print("=== Starting Swift Native Evaluation (\(samples.count) samples) ===")
-        print("STT Engine: \(useWhisper ? "WhisperKit (\(modelVariant.displayName))" : "Acoustic Mirror (Wav2Vec2)")\(enableWhisperEnsemble ? " + Whisper Ensemble" : "")\(enableDecoupledScoring ? " [Decoupled Scoring Mode]" : "")")
+        print("STT Engine: \(useNemotron ? "Nemotron 3.5 Streaming (Core AI)" : "Acoustic Mirror (Wav2Vec2)")\(enableWhisperEnsemble ? " + Neural Ensemble" : "")\(enableDecoupledScoring ? " [Decoupled Scoring Mode]" : "")")
         
-        if useWhisper || enableWhisperEnsemble {
-            print("=== Initializing WhisperKit (\(modelVariant.displayName)) ===")
+        if useNemotron || enableWhisperEnsemble {
+            print("=== Initializing Nemotron Core AI ===")
             let sema = DispatchSemaphore(value: 0)
             Task {
-                await WhisperSTTService.shared.initializeIfNeeded(modelVariant: modelVariant)
+                await NemotronSTTService.shared.initializeIfNeeded()
                 sema.signal()
             }
             sema.wait()
-            print("=== WhisperKit Initialization Complete ===")
+            print("=== Nemotron Core AI Initialization Complete ===")
         }
         
         if ProcessInfo.processInfo.environment["USE_LEARNED_SCORER"] == "1" {
@@ -404,6 +398,21 @@ class Evaluator {
             print("=== Exporting STT Confidence Features to: \(exportConfidencePath) (append=\(shouldAppend)) ===")
             return handle
         }() : nil
+
+        let isExportPhoneSequences = ProcessInfo.processInfo.environment["EXPORT_PHONE_SEQUENCES"] == "1"
+        let exportPhoneSequencesPath = ProcessInfo.processInfo.environment["EXPORT_PHONE_SEQUENCES_PATH"] ?? "/Users/vio/PycharmProjects/ProsodyEnglish/ScoringHead/data/speechocean_phone_sequences.jsonl"
+        let exportPhoneSequencesFileHandle: FileHandle? = isExportPhoneSequences ? {
+            let exportURL = URL(fileURLWithPath: exportPhoneSequencesPath)
+            try? FileManager.default.createDirectory(at: exportURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let shouldAppend = ProcessInfo.processInfo.environment["EXPORT_APPEND"] == "1" && FileManager.default.fileExists(atPath: exportURL.path)
+            if !shouldAppend {
+                FileManager.default.createFile(atPath: exportURL.path, contents: Data(), attributes: nil)
+            }
+            let handle = try? FileHandle(forWritingTo: exportURL)
+            handle?.seekToEndOfFile()
+            print("=== Exporting Phone Sequences to: \(exportPhoneSequencesPath) (append=\(shouldAppend)) ===")
+            return handle
+        }() : nil
         
         let ttsCacheDir = URL(fileURLWithPath: "/Users/vio/PycharmProjects/ProsodyEnglish/ProsodyApp/Dataset/speechocean_tts_cache")
         try? FileManager.default.createDirectory(at: ttsCacheDir, withIntermediateDirectories: true)
@@ -444,24 +453,26 @@ class Evaluator {
                 }
                 
                 var whisperText = ""
-                if useWhisper || enableWhisperEnsemble {
+                if useNemotron || enableWhisperEnsemble {
+                    self.nemotronLock.lock()
                     let sema = DispatchSemaphore(value: 0)
                     Task {
                         do {
-                            let res = try await WhisperSTTService.shared.transcribe(audioFloats: audioFloats)
+                            let res = try await NemotronSTTService.shared.transcribe(audioFloats: audioFloats)
                             whisperText = res.transcript
                         } catch {
-                            print("WhisperKit transcribe error: \(error)")
+                            print("Nemotron Core AI transcribe error: \(error)")
                         }
                         sema.signal()
                     }
                     sema.wait()
+                    self.nemotronLock.unlock()
                 }
                 
                 let transcript: String
                 let sfSpeechTranscript: String
                 
-                if useWhisper {
+                if useNemotron {
                     transcript = !whisperText.isEmpty ? whisperText : mirrorSnapped
                     sfSpeechTranscript = mirrorSnapped
                 } else {
@@ -476,33 +487,36 @@ class Evaluator {
                 var wordScoresOutput = ""
                 
                 let sampleId = sample.id
-                let cacheFile = ttsCacheDir.appendingPathComponent("\(sampleId).bin")
                 var ttsSegments: [WordTimestamp] = []
                 var ttsProbs: (probs: [Float], frames: Int, vocabSize: Int)? = nil
                 var ttsAudioFloats: [Float]? = nil
                 
-                if let cached = Evaluator.loadTTSCache(fileURL: cacheFile) {
-                    ttsSegments = cached.segments
-                    ttsProbs = (probs: cached.probs, frames: cached.frames, vocabSize: cached.vocabSize)
-                } else {
-                    let ttsAudioURL = URL(fileURLWithPath: "/Users/vio/PycharmProjects/ProsodyEnglish/ProsodyApp/Dataset/speechocean_tts").appendingPathComponent("\(sampleId).wav")
-                    ttsAudioFloats = self.loadAudio(url: ttsAudioURL)
-                    let ttsHypResult = ttsAudioFloats != nil ? self.inferenceEngine.processSynchronously(audioChunk: ttsAudioFloats!, reference: sample.reference) : nil
-                    if let ttsLogProbs = ttsHypResult?.logProbs {
-                        ttsSegments = CTCSegmentation.align(
-                            transcript: sample.reference,
-                            logProbs: ttsLogProbs,
-                            vocab: self.inferenceEngine.decoder.vocab,
-                            blankIndex: self.inferenceEngine.decoder.blankIndex
-                        )
-                    }
-                    if let ttsAudio = ttsAudioFloats,
-                       let phonemeEngine = self.inferenceEngine.phonemeEngine,
-                       let ttsLogits = self.inferenceEngine.extractPhonemeLogits(audioChunk: ttsAudio) {
-                        ttsProbs = phonemeEngine.getProbabilities(from: ttsLogits)
-                    }
-                    if let ttsP = ttsProbs {
-                        Evaluator.saveTTSCache(fileURL: cacheFile, segments: ttsSegments, probs: ttsP.probs, frames: ttsP.frames, vocabSize: ttsP.vocabSize)
+                let isSpeechOcean = datasetPath.lowercased().contains("speechocean")
+                if isSpeechOcean {
+                    let cacheFile = ttsCacheDir.appendingPathComponent("\(sampleId).bin")
+                    if let cached = Evaluator.loadTTSCache(fileURL: cacheFile) {
+                        ttsSegments = cached.segments
+                        ttsProbs = (probs: cached.probs, frames: cached.frames, vocabSize: cached.vocabSize)
+                    } else {
+                        let ttsAudioURL = URL(fileURLWithPath: "/Users/vio/PycharmProjects/ProsodyEnglish/ProsodyApp/Dataset/speechocean_tts").appendingPathComponent("\(sampleId).wav")
+                        ttsAudioFloats = self.loadAudio(url: ttsAudioURL)
+                        let ttsHypResult = ttsAudioFloats != nil ? self.inferenceEngine.processSynchronously(audioChunk: ttsAudioFloats!, reference: sample.reference) : nil
+                        if let ttsLogProbs = ttsHypResult?.logProbs {
+                            ttsSegments = CTCSegmentation.align(
+                                transcript: sample.reference,
+                                logProbs: ttsLogProbs,
+                                vocab: self.inferenceEngine.decoder.vocab,
+                                blankIndex: self.inferenceEngine.decoder.blankIndex
+                            )
+                        }
+                        if let ttsAudio = ttsAudioFloats,
+                           let phonemeEngine = self.inferenceEngine.phonemeEngine,
+                           let ttsLogits = self.inferenceEngine.extractPhonemeLogits(audioChunk: ttsAudio) {
+                            ttsProbs = phonemeEngine.getProbabilities(from: ttsLogits)
+                        }
+                        if let ttsP = ttsProbs {
+                            Evaluator.saveTTSCache(fileURL: cacheFile, segments: ttsSegments, probs: ttsP.probs, frames: ttsP.frames, vocabSize: ttsP.vocabSize)
+                        }
                     }
                 }
                 
@@ -518,6 +532,7 @@ class Evaluator {
                 var sampleGOP = 0
                 var hasGOP = false
                 var exportLines = ""
+                var phoneSequenceExportLines = ""
                 
                 let sampleAge = sample.age ?? 25
                 let sampleIsChild = sample.is_child ?? (sampleAge < 18)
@@ -575,6 +590,37 @@ class Evaluator {
                             if isExportFeatures, let feats = result.scoredWords[i].features {
                                 let featStr = feats.map { String(format: "%.5f", $0) }.joined(separator: ",")
                                 exportLines += "\(sample.id),\(sample.speaker ?? ""),\(i),\"\(result.scoredWords[i].text)\",\(featStr),\(refScores[i])\n"
+                            }
+
+                            if isExportPhoneSequences, i < result.feedbackItems.count {
+                                let fb = result.feedbackItems[i]
+                                let wordPhones: [[String: Any]] = fb.phonemes.map { p in
+                                    return [
+                                        "sym": p.symbol,
+                                        "score": Double(p.score) / 100.0,
+                                        "frames": p.frames,
+                                        "p_margin": Double(p.phoneMargin),
+                                        "post_margin": Double(p.posteriorMargin),
+                                        "t_mass": Double(p.targetMass),
+                                        "c_mass": Double(p.topCompetitorMass),
+                                        "c_sym": p.topCompetitorSymbol
+                                    ]
+                                }
+                                let record: [String: Any] = [
+                                    "sample_id": sample.id,
+                                    "speaker_id": sample.speaker ?? "unknown",
+                                    "word_idx": i,
+                                    "word": result.scoredWords[i].text,
+                                    "ref_score": refScores[i],
+                                    "is_child": sampleIsChild,
+                                    "pitch_zcr": Double(result.scoredWords[i].features?.last ?? 0.0),
+                                    "features_19": (result.scoredWords[i].features ?? []).map { Double($0) },
+                                    "phones": wordPhones
+                                ]
+                                if let jsonData = try? JSONSerialization.data(withJSONObject: record),
+                                   let jsonStr = String(data: jsonData, encoding: .utf8) {
+                                    phoneSequenceExportLines += jsonStr + "\n"
+                                }
                             }
                         }
                     }
@@ -757,6 +803,12 @@ class Evaluator {
                         cHandle.write(data)
                     }
                 }
+
+                if !phoneSequenceExportLines.isEmpty, let psHandle = exportPhoneSequencesFileHandle {
+                    if let data = phoneSequenceExportLines.data(using: .utf8) {
+                        psHandle.write(data)
+                    }
+                }
                 
                 totalErrors += dist
                 totalWords += refWords.count
@@ -814,6 +866,12 @@ class Evaluator {
                     } else if sampleAge >= 26 {
                         bracketMatureAdults.add(rVal: rVal, pVal: pVal)
                     }
+                    
+                    if let tier = sample.skill_level, !tier.isEmpty {
+                        var sTracker = skillLevelTrackers[tier] ?? EvaluationMetricsTracker()
+                        sTracker.add(rVal: rVal, pVal: pVal)
+                        skillLevelTrackers[tier] = sTracker
+                    }
                 }
                 
                 var logChunk = "Sample \(index + 1)/\(samples.count) | Total: \(String(format: "%.2fs", timeElapsed)) | STT: \(String(format: "%.2fs", sttTime)) | Score: \(String(format: "%.2fs", pTime))\n"
@@ -850,7 +908,7 @@ class Evaluator {
         let avgGOP = evaluatedSamples > 0 ? Float(totalGOPScore) / Float(evaluatedSamples) : 0
         let avgFluency = evaluatedFluencySamples > 0 ? Float(totalFluencyScore) / Float(evaluatedFluencySamples) : 0
         print("=== EVALUATION COMPLETE ===")
-        print("STT Engine: \(useWhisper ? "WhisperKit (\(modelVariant.displayName))" : "Acoustic Mirror (Wav2Vec2)")")
+        print("STT Engine: \(useNemotron ? "Nemotron 3.5 Streaming (Core AI)" : "Acoustic Mirror (Wav2Vec2)")")
         print("Total Errors: \(totalErrors)")
         print("Total Words: \(totalWords)")
         print("Final V-WER: \(String(format: "%.2f", finalWER))%")
@@ -994,6 +1052,21 @@ class Evaluator {
             }
         }
         print(sep)
+        
+        if !skillLevelTrackers.isEmpty {
+            print("\n=== SKILL LEVEL / L1 LANGUAGE BREAKDOWN ===")
+            print(sep)
+            print("\(pad("Tier/L1", 16)) | \(pad("Words", 6)) | \(pad("MAE", 6)) | \(pad("RMSE", 6)) | \(pad("Pearson r", 9)) | \(pad("Precision", 9)) | \(pad("Recall", 7)) | \(pad("FPR", 6)) | \(pad("F1", 8)) | \(pad("TP/FP/FN/TN", 15))")
+            print(sep)
+            for tier in skillLevelTrackers.keys.sorted() {
+                if let t = skillLevelTrackers[tier] {
+                    let confStr = "\(t.tp)/\(t.fp)/\(t.fn)/\(t.tn)"
+                    let row = "\(pad(tier, 16)) | \(pad("\(t.totalEvaluatedWords)", 6)) | \(pad(String(format: "%.3f", t.mae), 6)) | \(pad(String(format: "%.3f", t.rmse), 6)) | \(pad(String(format: "%.3f", t.pearsonR), 9)) | \(pad(String(format: "%.2f%%", t.precision), 9)) | \(pad(String(format: "%.2f%%", t.recall), 7)) | \(pad(String(format: "%.2f%%", t.fpr), 6)) | \(pad(String(format: "%.2f%%", t.f1), 8)) | \(pad(confStr, 15))"
+                    print(row)
+                }
+            }
+            print(sep)
+        }
         
         exit(0)
     }

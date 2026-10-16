@@ -189,6 +189,7 @@ class InferenceEngine: ObservableObject {
                     let output = try await self.acousticModel.prediction(input: input)
                     if Task.isCancelled { return }
                     
+                    let hs = output.hidden_states
                     let validFrames = min(249, max(1, Int(ceil(Double(validLength) / 320.0))))
                     let decodedText = self.decodeLogits(output.ctc_logits, validFrames: validFrames)
                     let timestamps = CTCSegmentation.align(
@@ -207,11 +208,13 @@ class InferenceEngine: ObservableObject {
                     )
                     
                     await MainActor.run {
+                        self.latestHiddenStates = hs
                         self.latestLiteralTranscript = decodedText.literal
                         self.latestTranscript = decodedText.snapped
                         self.latestFormattedTranscript = formatted
                         self.wordTimestamps = timestamps
                         self.latestLogProbs = decodedText.logProbs
+                        self.latestTopBeams = decodedText.topBeams
                         self.isProcessing = false
                     }
                     return
@@ -224,6 +227,7 @@ class InferenceEngine: ObservableObject {
             let step = Int(16000 * 4.0) // 4.0 second step = 200 frames
             let framesPerStep = 200
             var totalLogProbs: [[Float]] = []
+            var lastHiddenStates: MLMultiArray? = nil
             
             var offset = 0
             while offset < audioChunk.count {
@@ -249,6 +253,7 @@ class InferenceEngine: ObservableObject {
                     let input = Wav2Vec2_STTInput(audio: mlArray)
                     let output = try await self.acousticModel.prediction(input: input)
                     if Task.isCancelled { return }
+                    lastHiddenStates = output.hidden_states
                     
                     let validFrames = min(249, max(1, Int(ceil(Double(validLength) / 320.0))))
                     let isLastChunk = offset + step >= audioChunk.count
@@ -286,6 +291,7 @@ class InferenceEngine: ObservableObject {
             )
             
             await MainActor.run {
+                self.latestHiddenStates = lastHiddenStates
                 self.latestLiteralTranscript = decoded.literal
                 self.latestTranscript = decoded.snapped
                 self.latestFormattedTranscript = formatted
@@ -380,14 +386,28 @@ class InferenceEngine: ObservableObject {
                 self.latestHiddenStates = output.hidden_states
                 
                 let validFrames = min(249, max(1, Int(ceil(Double(validLength) / 320.0))))
-                let isLastChunk = offset + step >= audioChunk.count
                 let chunkLogProbs = self.extractLogProbs(output.ctc_logits, validFrames: validFrames)
                 
-                if isLastChunk {
+                if totalLogProbs.isEmpty {
                     totalLogProbs.append(contentsOf: chunkLogProbs)
                 } else {
-                    let framesToKeep = min(chunkLogProbs.count, framesPerStep)
-                    totalLogProbs.append(contentsOf: chunkLogProbs.prefix(framesToKeep))
+                    // Seamless acoustic stitching: Cross-fade overlapping frames (up to 49 frames / 1.0s)
+                    let overlapFrames = min(49, min(chunkLogProbs.count, totalLogProbs.count))
+                    let stitchIdx = totalLogProbs.count - overlapFrames
+                    for i in 0..<overlapFrames {
+                        let alpha = Float(i + 1) / Float(overlapFrames + 1)
+                        let prevFrame = totalLogProbs[stitchIdx + i]
+                        let nextFrame = chunkLogProbs[i]
+                        let nVals = min(prevFrame.count, nextFrame.count)
+                        var blended = [Float](repeating: 0, count: nVals)
+                        for v in 0..<nVals {
+                            blended[v] = (1.0 - alpha) * prevFrame[v] + alpha * nextFrame[v]
+                        }
+                        totalLogProbs[stitchIdx + i] = blended
+                    }
+                    if chunkLogProbs.count > overlapFrames {
+                        totalLogProbs.append(contentsOf: chunkLogProbs[overlapFrames...])
+                    }
                 }
             } catch {
                 print("Inference failed: \(error)")
@@ -413,10 +433,13 @@ class InferenceEngine: ObservableObject {
     func extractPhonemeLogits(audioChunk: [Float]) -> MLMultiArray? {
         guard let phonemeEngine = phonemeEngine else { return nil }
         
-        let normalizedAudio = audioChunk
+        var normalizedAudio = audioChunk
         var mean: Float = 0
         var stdDev: Float = 0
         vDSP_normalize(normalizedAudio, 1, nil, 1, &mean, &stdDev, vDSP_Length(normalizedAudio.count))
+        if stdDev > 1e-6 {
+            vDSP_normalize(normalizedAudio, 1, &normalizedAudio, 1, &mean, &stdDev, vDSP_Length(normalizedAudio.count))
+        }
         
         let numFrames = normalizedAudio.count
         guard let mlArray = try? MLMultiArray(shape: [1, NSNumber(value: numFrames)], dataType: .float32) else { return nil }
@@ -433,10 +456,13 @@ class InferenceEngine: ObservableObject {
     }
     
     func extractSTTHiddenStates(audioChunk: [Float]) -> MLMultiArray? {
-        let normalizedAudio = audioChunk
+        var normalizedAudio = audioChunk
         var mean: Float = 0
         var stdDev: Float = 0
         vDSP_normalize(normalizedAudio, 1, nil, 1, &mean, &stdDev, vDSP_Length(normalizedAudio.count))
+        if stdDev > 1e-6 {
+            vDSP_normalize(normalizedAudio, 1, &normalizedAudio, 1, &mean, &stdDev, vDSP_Length(normalizedAudio.count))
+        }
         
         let targetLength = 80000
         guard let mlArray = try? MLMultiArray(shape: [1, NSNumber(value: targetLength)], dataType: .float32) else { return nil }

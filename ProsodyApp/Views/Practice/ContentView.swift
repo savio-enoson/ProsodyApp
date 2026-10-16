@@ -25,7 +25,7 @@ struct ContentView: View {
                                 .foregroundColor(.secondary)
                             CatalystBadge(
                                 settings.engineType.displayName,
-                                variant: settings.engineType == .whisperKit ? .success : .slate
+                                variant: settings.engineType == .nemotron ? .success : .slate
                             )
                         }
                     }
@@ -61,7 +61,15 @@ struct ContentView: View {
                         PracticeTranscriptDiffView(viewModel: viewModel)
 
                         // MARK: Evaluation Progress & Status
-                        if viewModel.isFinishingSession {
+                        if viewModel.isTestStreaming {
+                            HStack(spacing: Catalyst.Spacing.space2) {
+                                ProgressView().scaleEffect(0.7)
+                                Text(viewModel.testStreamingStatus)
+                                    .font(Catalyst.Typography.caption1)
+                                    .foregroundColor(.secondary)
+                                CatalystBadge("savio.wav", variant: .primary)
+                            }
+                        } else if viewModel.isFinishingSession {
                             HStack(spacing: Catalyst.Spacing.space2) {
                                 ProgressView().scaleEffect(0.7)
                                 Text("Finalizing session…")
@@ -71,7 +79,7 @@ struct ContentView: View {
                         } else if viewModel.isScoring {
                             HStack(spacing: Catalyst.Spacing.space2) {
                                 ProgressView().scaleEffect(0.7)
-                                Text(settings.engineType == .whisperKit ? "Evaluating with Whisper & Acoustic Mirror..." : "Evaluating pronunciation...")
+                                Text(settings.engineType == .nemotron ? "Evaluating with Nemotron Core AI & Acoustic Mirror..." : "Evaluating pronunciation...")
                                     .font(Catalyst.Typography.caption1)
                                     .foregroundColor(.secondary)
                             }
@@ -113,11 +121,9 @@ struct ContentView: View {
         .sheet(isPresented: $viewModel.showingSettings) {
             SettingsView()
         }
-        .sheet(isPresented: $viewModel.showingCoaching, onDismiss: {
-            viewModel.sessionManager.resetSession()
-        }) {
+        .sheet(isPresented: $viewModel.showingCoaching) {
             if let record = viewModel.sessionManager.currentSession {
-                CoachingChatView(coach: CoachingSessionService(), record: record)
+                CoachingChatView(coach: viewModel.coachingSessionService, record: record)
             }
         }
         .alert(isPresented: $viewModel.showingPermissionAlert) {
@@ -148,10 +154,29 @@ struct ContentView: View {
                         .font(Catalyst.Typography.caption1)
                         .foregroundColor(.secondary)
                     Spacer()
+
+                    if viewModel.sessionManager.currentSession != nil && !viewModel.isTestStreaming {
+                        CatalystButton("AI Coach Review", role: .primary) {
+                            viewModel.showingCoaching = true
+                        }
+                    }
+
                     CatalystButton("New Prompt", role: .default) {
                         Task { await viewModel.promptService.generate() }
                     }
-                    .disabled(viewModel.promptService.isGenerating)
+                    .disabled(viewModel.promptService.isGenerating || viewModel.isTestStreaming)
+
+                    CatalystButton(
+                        viewModel.isTestStreaming ? "Streaming…" : "Test Sample",
+                        role: viewModel.isTestStreaming ? .danger : .default
+                    ) {
+                        if viewModel.isTestStreaming {
+                            viewModel.cancelTestSample()
+                        } else {
+                            viewModel.runTestSample()
+                        }
+                    }
+                    .disabled(viewModel.audioManager.isRecording || viewModel.isModelLoading)
                 }
 
                 if viewModel.promptService.isGenerating && viewModel.promptService.currentPrompt.isEmpty {

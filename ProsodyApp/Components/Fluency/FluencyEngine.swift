@@ -1,12 +1,12 @@
 import Foundation
 import Accelerate
 
-enum FluencyContext {
+nonisolated enum FluencyContext: Sendable {
     case readingAloud
     case conversation
 }
 
-struct FluencyThresholds {
+nonisolated struct FluencyThresholds: Sendable {
     let speechRateGood: Float
     let speechRateOkay: Float
     let speechRateTargetMax: Float
@@ -48,7 +48,7 @@ struct FluencyThresholds {
     )
 }
 
-struct FluencyEngine {
+nonisolated struct FluencyEngine {
 
     /// Minimum gap (seconds) to classify as a pause. 
     /// Research standard: 250ms filters out natural plosive closures.
@@ -244,9 +244,27 @@ struct FluencyEngine {
         transcript: String? = nil,
         sfSpeechTranscript: String? = nil
     ) -> FluencyResult? {
-        guard segments.count >= minimumWords,
-              let first = segments.first,
-              let last = segments.last else { return nil }
+        guard segments.count >= minimumWords else { return nil }
+
+        let sampleRate: Float = 16000.0
+        let chunkDur = audioChunk != nil ? Double(audioChunk!.count) / Double(sampleRate) : 0.0
+        let effectiveSegments: [WordTimestamp]
+        if let first = segments.first, first.startTime > 2.0 && (chunkDur > 0 && first.startTime >= chunkDur * 0.5) {
+            let offset = first.startTime
+            effectiveSegments = segments.map {
+                WordTimestamp(
+                    word: $0.word,
+                    startTime: max(0.0, $0.startTime - offset),
+                    duration: $0.duration,
+                    alignmentScore: $0.alignmentScore
+                )
+            }
+        } else {
+            effectiveSegments = segments
+        }
+
+        guard let first = effectiveSegments.first,
+              let last = effectiveSegments.last else { return nil }
         
         let thresholds: FluencyThresholds = (context == .readingAloud) ? .readingAloud : .conversation
         
@@ -255,9 +273,9 @@ struct FluencyEngine {
         guard totalDuration > 0 else { return nil }
         
         // 2. Phonation time (sum of all word durations)
-        let phonationTime = segments.reduce(0.0) { $0 + $1.duration }
+        let phonationTime = effectiveSegments.reduce(0.0) { $0 + $1.duration }
         let articulationRate = phonationTime > 0 
-            ? Float(segments.count) / Float(phonationTime) 
+            ? Float(effectiveSegments.count) / Float(phonationTime) 
             : 0
             
         // Adaptive pause threshold based on speaker's articulation rate:
@@ -267,24 +285,22 @@ struct FluencyEngine {
         
         // 3. Detect pauses (gaps between consecutive segments >= adaptivePauseThreshold)
         var pauses: [PauseEvent] = []
-        for i in 1..<segments.count {
-            let gap = segments[i].startTime - segments[i-1].endTime
+        for i in 1..<effectiveSegments.count {
+            let gap = effectiveSegments[i].startTime - effectiveSegments[i-1].endTime
             if gap >= adaptivePauseThreshold {
                 pauses.append(PauseEvent(
-                    startTime: segments[i-1].endTime,
+                    startTime: effectiveSegments[i-1].endTime,
                     duration: gap,
-                    wordBefore: segments[i-1].word,
-                    wordAfter: segments[i].word
+                    wordBefore: effectiveSegments[i-1].word,
+                    wordAfter: effectiveSegments[i].word
                 ))
             }
         }
 
-        let sampleRate: Float = 16000.0
-
         // 4. Disfluency & Syntactic Pause Position Analysis
-        let textForTagger = (transcript != nil && !transcript!.isEmpty) ? transcript! : segments.map(\.word).joined(separator: " ")
+        let textForTagger = (transcript != nil && !transcript!.isEmpty) ? transcript! : effectiveSegments.map(\.word).joined(separator: " ")
         let disfluencyReport = DisfluencyDetector.analyze(
-            segments: segments,
+            segments: effectiveSegments,
             transcript: textForTagger,
             sfSpeechTranscript: sfSpeechTranscript,
             pauses: &pauses,
@@ -294,7 +310,7 @@ struct FluencyEngine {
         )
         
         // 5. Compute basic metrics
-        let speechRate = Float(segments.count) / Float(totalDuration)
+        let speechRate = Float(effectiveSegments.count) / Float(totalDuration)
         let phonationTimeRatio = Float(phonationTime / totalDuration)
         let pauseFrequency = totalDuration > 0 
             ? Float(pauses.count) / Float(totalDuration / 60.0) 
@@ -304,7 +320,7 @@ struct FluencyEngine {
             : Float(pauses.reduce(0.0) { $0 + $1.duration }) / Float(pauses.count)
         
         // 6. Mean Length of Run & run variability
-        let runs = Self.computeRuns(segments: segments, pauseThreshold: adaptivePauseThreshold)
+        let runs = Self.computeRuns(segments: effectiveSegments, pauseThreshold: adaptivePauseThreshold)
         let mlr = runs.isEmpty ? 0 : Float(runs.reduce(0, +)) / Float(runs.count)
         let maxLengthOfRun = runs.max() ?? 0
         let runLengthCV = Self.computeCV(runs.map { Float($0) })
@@ -312,25 +328,25 @@ struct FluencyEngine {
         // 7. Extended pause & duration metrics
         let maxPauseDuration = pauses.map { Float($0.duration) }.max() ?? 0.0
         let pauseDurationCV = Self.computeCV(pauses.map { Float($0.duration) })
-        let wordDurationCV = Self.computeCV(segments.map { Float($0.duration) })
+        let wordDurationCV = Self.computeCV(effectiveSegments.map { Float($0.duration) })
         let longPauseCount = pauses.filter { $0.duration >= 0.5 }.count
         let longPauseRatio = pauses.isEmpty ? 0.0 : Float(longPauseCount) / Float(pauses.count)
         
         // Local speech rate CV over sliding 3-word windows
         var windowRates: [Float] = []
-        if segments.count >= 3 {
-            for i in 0...(segments.count - 3) {
-                let span = segments[i + 2].endTime - segments[i].startTime
+        if effectiveSegments.count >= 3 {
+            for i in 0...(effectiveSegments.count - 3) {
+                let span = effectiveSegments[i + 2].endTime - effectiveSegments[i].startTime
                 if span > 1e-4 {
                     windowRates.append(Float(3.0 / span))
                 }
             }
         }
         let speechRateCV = Self.computeCV(windowRates)
-        let meanAlignmentScore = segments.map { $0.alignmentScore }.reduce(0, +) / Float(segments.count)
+        let meanAlignmentScore = effectiveSegments.map { $0.alignmentScore }.reduce(0, +) / Float(effectiveSegments.count)
         
         // 8. Prosodic & Rhythmic Features
-        let wordNPVI = computeWordNPVI(segments)
+        let wordNPVI = computeWordNPVI(effectiveSegments)
         
         let energyCV: Float
         let pitchSemitoneStdDev: Float
@@ -338,7 +354,7 @@ struct FluencyEngine {
         let effectiveZcr: Float
 
         if let audio = audioChunk, !audio.isEmpty {
-            energyCV = computeWordEnergyCV(audio: audio, sampleRate: sampleRate, segments: segments)
+            energyCV = computeWordEnergyCV(audio: audio, sampleRate: sampleRate, segments: effectiveSegments)
             let pitchStats = computePitchContour(audio: audio, sampleRate: sampleRate)
             pitchSemitoneStdDev = pitchStats.semitoneStdDev
             voicingRatio = pitchStats.voicingRatio
@@ -592,7 +608,7 @@ struct FluencyEngine {
         )
 
         // 11. Score calculation via CoreML GBDT
-        var sessionResult = FluencyResult(
+        let sessionResult = FluencyResult(
             overallScore: 0,
             speechRate: sessionSpeechRate,
             articulationRate: articulationRate,

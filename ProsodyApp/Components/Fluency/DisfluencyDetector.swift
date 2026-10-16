@@ -5,7 +5,7 @@ import Accelerate
 /// Dedicated detection and syntactic analysis engine for speech disfluencies.
 /// Detects vocalized filled pauses ("um", "uh"), exact word/phrase repetitions,
 /// false starts, and classifies pause positions into grammatical boundaries vs. intra-phrase hesitations.
-struct DisfluencyDetector {
+nonisolated struct DisfluencyDetector {
 
     // MARK: - Constants & Dictionaries
 

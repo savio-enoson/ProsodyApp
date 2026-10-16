@@ -26,14 +26,18 @@ struct PracticeRecordingBar: View {
                     ) {
                         viewModel.onFinishSession()
                     }
-                    .disabled(viewModel.isFinishingSession)
+                    .disabled(viewModel.isFinishingSession || viewModel.isTestStreaming)
+                } else if viewModel.sessionManager.currentSession != nil {
+                    CatalystButton("AI Coach Review", role: .primary) {
+                        viewModel.showingCoaching = true
+                    }
                 }
 
                 CatalystButton("Settings", role: .default) {
                     viewModel.showingSettings = true
                 }
             }
-            .disabled(viewModel.isModelLoading)
+            .disabled(viewModel.isModelLoading || viewModel.isTestStreaming)
 
             if viewModel.audioManager.isRecording {
                 HStack(spacing: Catalyst.Spacing.space2) {

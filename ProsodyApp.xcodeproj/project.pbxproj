@@ -9,7 +9,6 @@
 /* Begin PBXBuildFile section */
 		386D34CE74144419565457F2 /* libespeak-ng in Frameworks */ = {isa = PBXBuildFile; productRef = B582FC5E85B7CC45759D78D5 /* libespeak-ng */; };
 		9AA5D53A7E6230B3D026A83E /* espeak-ng-data in Frameworks */ = {isa = PBXBuildFile; productRef = 0476796D9C2BF99EAA4E17E7 /* espeak-ng-data */; };
-		9F8E7D6C5B4A302198765434 /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = 9F8E7D6C5B4A302198765433 /* WhisperKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -31,7 +30,6 @@
 			files = (
 				9AA5D53A7E6230B3D026A83E /* espeak-ng-data in Frameworks */,
 				386D34CE74144419565457F2 /* libespeak-ng in Frameworks */,
-				9F8E7D6C5B4A302198765434 /* WhisperKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -68,7 +66,6 @@
 			packageProductDependencies = (
 				0476796D9C2BF99EAA4E17E7 /* espeak-ng-data */,
 				B582FC5E85B7CC45759D78D5 /* libespeak-ng */,
-				9F8E7D6C5B4A302198765433 /* WhisperKit */,
 			);
 			productName = ProsodyApp;
 			productReference = 2C5A1E5D304D29D3004915F2 /* ProsodyApp.app */;
@@ -100,7 +97,6 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				8DA4705C62A3201B898499C7 /* XCRemoteSwiftPackageReference "espeak-ng-spm" */,
-				9F8E7D6C5B4A302198765432 /* XCRemoteSwiftPackageReference "WhisperKit" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 2C9726E13045390800BDD955;
@@ -367,14 +363,6 @@
 				kind = branch;
 			};
 		};
-		9F8E7D6C5B4A302198765432 /* XCRemoteSwiftPackageReference "WhisperKit" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/argmaxinc/WhisperKit.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 0.9.0;
-			};
-		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -382,11 +370,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 8DA4705C62A3201B898499C7 /* XCRemoteSwiftPackageReference "espeak-ng-spm" */;
 			productName = "espeak-ng-data";
-		};
-		9F8E7D6C5B4A302198765433 /* WhisperKit */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 9F8E7D6C5B4A302198765432 /* XCRemoteSwiftPackageReference "WhisperKit" */;
-			productName = WhisperKit;
 		};
 		B582FC5E85B7CC45759D78D5 /* libespeak-ng */ = {
 			isa = XCSwiftPackageProductDependency;

@@ -2,7 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var settings = STTSettings.shared
-    @ObservedObject var whisperService = WhisperSTTService.shared
+    @ObservedObject var nemotronService = NemotronSTTService.shared
     @ObservedObject var ollamaService = OllamaService.shared
     @ObservedObject var interests = InterestsStore.shared
     @ObservedObject var tts = TTSManager.shared
@@ -40,9 +40,9 @@ struct SettingsView: View {
                         ForEach(STTEngineType.allCases) { engine in
                             Button(action: {
                                 settings.engineType = engine
-                                if engine == .whisperKit {
+                                if engine == .nemotron {
                                     Task {
-                                        await whisperService.initializeIfNeeded(modelVariant: settings.whisperModel)
+                                        await nemotronService.initializeIfNeeded()
                                     }
                                 }
                             }) {
@@ -58,8 +58,8 @@ struct SettingsView: View {
                                                 .font(Catalyst.Typography.body)
                                                 .fontWeight(settings.engineType == engine ? .semibold : .regular)
                                                 .foregroundColor(.primary)
-                                            if engine == .whisperKit {
-                                                CatalystBadge("High Accuracy", variant: .success)
+                                            if engine == .nemotron {
+                                                CatalystBadge("Core AI Streaming", variant: .success)
                                             } else {
                                                 CatalystBadge("Strict Mirror", variant: .slate)
                                             }
@@ -85,38 +85,32 @@ struct SettingsView: View {
                         }
                     }
 
-                    // MARK: WhisperKit Configuration
-                    if settings.engineType == .whisperKit {
+                    // MARK: Nemotron Core AI Configuration
+                    if settings.engineType == .nemotron {
                         VStack(alignment: .leading, spacing: Catalyst.Spacing.space3) {
-                            Text("Whisper Model Variant")
+                            Text("Nemotron 3.5 Core AI Engine")
                                 .font(Catalyst.Typography.headline)
 
-                            Picker("Model", selection: $settings.whisperModel) {
-                                ForEach(WhisperModelVariant.allCases) { variant in
-                                    Text(variant.displayName).tag(variant)
-                                }
-                            }
-                            .pickerStyle(.segmented)
-                            .onChange(of: settings.whisperModel) { _, newModel in
-                                Task { await whisperService.initializeIfNeeded(modelVariant: newModel) }
-                            }
+                            Text("Direct Core AI FastConformer-RNNT on Apple Silicon GPU with 320ms streaming latency, native punctuation, and word timestamps.")
+                                .font(Catalyst.Typography.caption1)
+                                .foregroundColor(.secondary)
 
                             HStack(spacing: Catalyst.Spacing.space2) {
                                 Text("Status:")
                                     .font(Catalyst.Typography.caption1)
                                     .foregroundColor(.secondary)
-                                switch whisperService.state {
+                                switch nemotronService.state {
                                 case .uninitialized:
                                     CatalystBadge("Not Loaded", variant: .slate)
                                     Spacer()
                                     CatalystButton("Pre-load Model", role: .default) {
-                                        Task { await whisperService.initializeIfNeeded(modelVariant: settings.whisperModel) }
+                                        Task { await nemotronService.initializeIfNeeded() }
                                     }
                                 case .loading(let message):
                                     CatalystBadge("Loading...", variant: .warning)
                                     Text(message).font(Catalyst.Typography.caption1).foregroundColor(.secondary)
-                                case .ready(let model):
-                                    CatalystBadge("Ready (\(model))", variant: .success)
+                                case .ready:
+                                    CatalystBadge("Ready (Apple Core AI GPU)", variant: .success)
                                 case .failed(let err):
                                     CatalystBadge("Error", variant: .danger)
                                     Text(err).font(Catalyst.Typography.caption1).foregroundColor(.red).lineLimit(1)

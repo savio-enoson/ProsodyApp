@@ -87,132 +87,9 @@ final class StreamingVoiceEvaluator {
         return finalTranscript
     }
 
-    /// Segments audio into streaming turns based on speech pauses and energy VAD.
-    private func segmentStreamingTurns(audio: [Float], sampleRate: Int = 16000) -> [(start: Double, end: Double, samples: [Float])] {
-        let frameSize = 1024 // 64ms at 16kHz
-        var noiseFloor: Float = 0.005
-        var isSpeaking = false
-        var silenceFrames = 0
-        let maxChunkFrames = Int(14.0 * Double(sampleRate) / Double(frameSize)) // 14 seconds max turn before valley split
-
-        var turns: [(start: Double, end: Double, samples: [Float])] = []
-        var chunkStartIndex = 0
-        var currentChunkFrames = 0
-
-        let numFrames = audio.count / frameSize
-        var frameRMS = [Float](repeating: 0, count: numFrames)
-
-        for i in 0..<numFrames {
-            let startIdx = i * frameSize
-            let endIdx = min(startIdx + frameSize, audio.count)
-            var sumSq: Float = 0.0
-            for j in startIdx..<endIdx {
-                let s = audio[j]
-                sumSq += s * s
-            }
-            let rms = sqrt(sumSq / Float(endIdx - startIdx))
-            frameRMS[i] = rms
-
-            if !isSpeaking {
-                if rms < noiseFloor {
-                    noiseFloor = rms
-                } else {
-                    noiseFloor = noiseFloor * 0.95 + rms * 0.05
-                }
-            }
-
-            let thresh = max(0.012, noiseFloor * 2.2)
-
-            if rms > thresh {
-                if !isSpeaking {
-                    isSpeaking = true
-                    chunkStartIndex = startIdx
-                    currentChunkFrames = 0
-                }
-                silenceFrames = 0
-            } else {
-                if isSpeaking {
-                    silenceFrames += 1
-                }
-            }
-
-            if isSpeaking {
-                currentChunkFrames += 1
-
-                // Progressive silence threshold:
-                // - Early in turn (<4s): require ~512ms (8 frames) to avoid fragmenting short phrases
-                // - Mid turn (4s-8s): require ~320ms (5 frames)
-                // - Long turn (>8s): require ~192ms (3 frames) to capture natural clause/breath pauses
-                let requiredSilenceFrames: Int
-                if currentChunkFrames < Int(4.0 * Double(sampleRate) / Double(frameSize)) {
-                    requiredSilenceFrames = 8
-                } else if currentChunkFrames < Int(8.0 * Double(sampleRate) / Double(frameSize)) {
-                    requiredSilenceFrames = 5
-                } else {
-                    requiredSilenceFrames = 3
-                }
-
-                var shouldFlush = false
-                var flushEndIndex = 0
-
-                if silenceFrames >= requiredSilenceFrames {
-                    shouldFlush = true
-                    flushEndIndex = max(chunkStartIndex + 8000, (i - silenceFrames + 1) * frameSize)
-                } else if currentChunkFrames >= maxChunkFrames {
-                    // Energy-valley split: do not cut blindly mid-word.
-                    // Search backward in the last 2.0s (31 frames) for the local RMS energy minimum (inter-word dip).
-                    let lookbackWindow = min(currentChunkFrames - 16, Int(2.0 * Double(sampleRate) / Double(frameSize)))
-                    if lookbackWindow > 4 {
-                        var minRMS = Float.infinity
-                        var bestSplitFrame = i
-                        for f in (i - lookbackWindow)...i {
-                            if frameRMS[f] < minRMS {
-                                minRMS = frameRMS[f]
-                                bestSplitFrame = f
-                            }
-                        }
-                        shouldFlush = true
-                        flushEndIndex = max(chunkStartIndex + 8000, bestSplitFrame * frameSize)
-                    } else {
-                        shouldFlush = true
-                        flushEndIndex = max(chunkStartIndex + 8000, i * frameSize)
-                    }
-                }
-
-                if shouldFlush {
-                    let safeEnd = min(flushEndIndex, audio.count)
-                    if safeEnd - chunkStartIndex >= 8000 { // at least 0.5s
-                        let chunk = Array(audio[chunkStartIndex..<safeEnd])
-                        turns.append((
-                            start: Double(chunkStartIndex) / Double(sampleRate),
-                            end: Double(safeEnd) / Double(sampleRate),
-                            samples: chunk
-                        ))
-                    }
-                    if silenceFrames >= requiredSilenceFrames {
-                        isSpeaking = false
-                        silenceFrames = 0
-                        currentChunkFrames = 0
-                    } else {
-                        // After an energy-valley split, resume speaking immediately from the split point
-                        chunkStartIndex = safeEnd
-                        currentChunkFrames = max(0, (i * frameSize - safeEnd) / frameSize)
-                        silenceFrames = 0
-                    }
-                }
-            }
-        }
-
-        if isSpeaking && (audio.count - chunkStartIndex) >= 8000 {
-            let chunk = Array(audio[chunkStartIndex..<audio.count])
-            turns.append((
-                start: Double(chunkStartIndex) / Double(sampleRate),
-                end: Double(audio.count) / Double(sampleRate),
-                samples: chunk
-            ))
-        }
-
-        return turns
+    /// Segments audio into streaming turns using the unified TurnSegmenter.
+    static func segmentStreamingTurns(audio: [Float], sampleRate: Int = 16000) -> [TurnSegment] {
+        return TurnSegmenter.segment(audio: audio, sampleRate: sampleRate)
     }
 
     /// Evaluates Levenshtein alignment between hypothesis and ground truth words.
@@ -276,9 +153,9 @@ final class StreamingVoiceEvaluator {
         print("          END-TO-END STREAMING VOICE EVALUATION: RAINBOW PASSAGE                ")
         print("================================================================================\n")
 
-        // 1. Initialize WhisperKit & prewarm models
-        print("[SETUP] Prewarming models (Kokoro, StyleEncoder, WhisperKit, ScoringHead)...")
-        await WhisperSTTService.shared.initializeIfNeeded(modelVariant: .tiny)
+        // 1. Initialize Nemotron Core AI & prewarm models
+        print("[SETUP] Prewarming models (Kokoro, StyleEncoder, Nemotron Core AI, ScoringHead)...")
+        await NemotronSTTService.shared.initializeIfNeeded()
         TTSManager.shared.prewarm()
 
         // Configure STTSettings
@@ -289,13 +166,25 @@ final class StreamingVoiceEvaluator {
             STTSettings.shared.llmProvider = .ollama
             STTSettings.shared.ollamaModel = "gemma4:e4b-mlx"
         }
+        self.inferenceEngine.useLearnedScoringHead = true
+        LearnedScoringEngine.shared.loadModelIfAvailable()
 
-        let subjects: [SpeakerSubject] = [
+        var subjects: [SpeakerSubject] = [
             SpeakerSubject(name: "Savio", proficiencyGroup: "High-Proficiency", filename: "savio.wav"),
             SpeakerSubject(name: "Gagaz", proficiencyGroup: "High-Proficiency", filename: "gagaz.wav"),
+            SpeakerSubject(name: "Nicholas", proficiencyGroup: "High-Proficiency", filename: "nicholas.wav"),
             SpeakerSubject(name: "Kak Anggi", proficiencyGroup: "Medium-Proficiency", filename: "kak_anggi.wav"),
-            SpeakerSubject(name: "Ko Davin", proficiencyGroup: "Medium-Proficiency", filename: "ko_davin.wav")
+            SpeakerSubject(name: "Ko Davin", proficiencyGroup: "Medium-Proficiency", filename: "ko_davin.wav"),
+            SpeakerSubject(name: "Kak Gemala", proficiencyGroup: "Medium-Proficiency", filename: "kak_gemala.wav"),
+            SpeakerSubject(name: "Kak Tere", proficiencyGroup: "Medium-Proficiency", filename: "kak_tere.wav"),
+            SpeakerSubject(name: "Dewa", proficiencyGroup: "Medium-Proficiency", filename: "dewa.wav"),
+            SpeakerSubject(name: "Tiara", proficiencyGroup: "Medium-Proficiency", filename: "tiara.wav")
         ]
+
+        if let filterStr = ProcessInfo.processInfo.environment["EVAL_STREAMING_SUBJECTS"] {
+            let allowed = Set(filterStr.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() })
+            subjects = subjects.filter { allowed.contains($0.filename.lowercased()) || allowed.contains($0.name.lowercased()) }
+        }
 
         let refWords = Self.rainbowPassageGT
             .replacingOccurrences(of: "[.,!?;:\"']", with: "", options: .regularExpression)
@@ -332,7 +221,7 @@ final class StreamingVoiceEvaluator {
             }
 
             // Segment into streaming turns
-            let turns = segmentStreamingTurns(audio: audioSamples, sampleRate: 16000)
+            let turns = Self.segmentStreamingTurns(audio: audioSamples, sampleRate: 16000)
             print("VAD Segmenter Extracted: \(turns.count) streaming utterance turns.\n")
 
             let scoringManager = PhonemeScoringManager(inferenceEngine: self.inferenceEngine)
@@ -343,26 +232,27 @@ final class StreamingVoiceEvaluator {
             var allHypWords: [String] = []
             var allFlaggedWords: Set<String> = []
             var scoredWordItems: [ScoredWord] = []
+            var lastTurnHyp: String? = nil
 
             for (turnIdx, turn) in turns.enumerated() {
                 let tTurn0 = CFAbsoluteTimeGetCurrent()
 
                 // A. STT (Wav2Vec2 Conformer Acoustic Mirror)
                 let sttResult = self.inferenceEngine.processSynchronously(audioChunk: turn.samples, reference: nil)
-                let snapped = sttResult?.snapped ?? ""
-                let literal = sttResult?.literal ?? ""
+                var snapped = sttResult?.snapped ?? ""
+                var literal = sttResult?.literal ?? ""
                 let logProbs = sttResult?.logProbs
 
-                // B. Dual-ASR WhisperKit cross-check
+                // B. Dual-ASR Nemotron Core AI cross-check
                 var whisperTranscript = ""
                 do {
-                    let wRes = try await WhisperSTTService.shared.transcribe(audioFloats: turn.samples, modelVariant: .tiny)
-                    whisperTranscript = wRes.transcript
+                    let nRes = try await NemotronSTTService.shared.transcribe(audioFloats: turn.samples, language: "en-US")
+                    whisperTranscript = nRes.transcript
                 } catch {
                     whisperTranscript = ""
                 }
 
-                // C. CTCSegmentation alignment
+                // C. CTCSegmentation alignment (chunk-relative: timeOffset = 0.0)
                 var segments: [WordTimestamp] = []
                 if let lp = logProbs, !snapped.isEmpty {
                     segments = CTCSegmentation.align(
@@ -370,14 +260,33 @@ final class StreamingVoiceEvaluator {
                         logProbs: lp,
                         vocab: self.inferenceEngine.decoder.vocab,
                         blankIndex: self.inferenceEngine.decoder.blankIndex,
-                        timeOffset: turn.start
+                        timeOffset: 0.0
                     )
                 }
 
-                // D. Apple SFSpeech transcript
+                // D. Sliding-window overlap deduplication across all streams before scoring
+                var droppedOverlapCount = 0
+                if turn.isSlidingWindowContinuation, let prevHyp = lastTurnHyp {
+                    let (dedupedHead, droppedCount) = WordOverlapDeduplicator.deduplicateText(tailTranscript: prevHyp, headTranscript: snapped)
+                    droppedOverlapCount = droppedCount
+                    if droppedCount > 0 {
+                        print("     [DEDUP] Dropped \(droppedCount) duplicate overlap prefix tokens across sliding boundary")
+                        snapped = dedupedHead
+                        if droppedCount < segments.count {
+                            segments = Array(segments.dropFirst(droppedCount))
+                        }
+                        let litWords = literal.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
+                        if droppedCount < litWords.count {
+                            literal = litWords.dropFirst(droppedCount).joined(separator: " ")
+                        }
+                    }
+                }
+                lastTurnHyp = sttResult?.snapped ?? snapped
+
+                // E. Apple SFSpeech transcript
                 let sfSpeech = getSFSpeechTranscriptSync(audioFloats: turn.samples)
 
-                // E. Fluency Evaluation
+                // F. Fluency Evaluation
                 let fluency = FluencyManager.shared.evaluate(
                     segments: segments,
                     isChild: false,
@@ -386,19 +295,29 @@ final class StreamingVoiceEvaluator {
                     sfSpeechTranscript: sfSpeech
                 )
 
-                // F. Phoneme & Word Scoring (23-Feature GBDT + 16-Feature CEM)
+                // G. Intent vs. Realization Reconciliation & Learned Sequence Scoring
+                let intentSource = !whisperTranscript.isEmpty ? whisperTranscript : snapped
+                let reconciled = IntentRealizationReconciler.reconcile(
+                    intent: intentSource,
+                    literal: literal,
+                    fallbackTranscript: snapped
+                )
+                let scoringRef: String? = (reconciled.scoringReference != reconciled.displayTranscript) ? reconciled.scoringReference : nil
+                let displayTranscriptToUse = reconciled.displayTranscript.isEmpty ? snapped : reconciled.displayTranscript
+
                 let scoreResult = scoringManager.scoreAudio(
                     turn.samples,
-                    transcript: snapped,
+                    transcript: displayTranscriptToUse,
                     literalTranscript: literal,
                     sfSpeechTranscript: sfSpeech,
                     whisperTranscript: whisperTranscript,
+                    scoringReference: scoringRef,
                     userSegments: segments,
                     isChild: false,
                     sttLogProbs: logProbs
                 )
 
-                // G. Silent Background Learner Voice Profiling
+                // H. Silent Background Learner Voice Profiling
                 await MainActor.run {
                     TTSManager.shared.updateLearnerProfile(from: turn.samples)
                 }
@@ -414,8 +333,8 @@ final class StreamingVoiceEvaluator {
                     fluencyResult: fluency,
                     wordTimestamps: segments,
                     audioURL: fileURL,
-                    startTime: turn.start,
-                    endTime: turn.end
+                    startTime: turn.startTime,
+                    endTime: turn.endTime
                 )
                 session.utterances.append(utterance)
 
@@ -434,7 +353,7 @@ final class StreamingVoiceEvaluator {
                     }
                 }
 
-                print("  [Turn \(turnIdx + 1)/\(turns.count)] (\(String(format: "%.2f", turn.start))s - \(String(format: "%.2f", turn.end))s, dur: \(String(format: "%.2f", turnDur))s, RTF: \(String(format: "%.3f", rtf))x)")
+                print("  [Turn \(turnIdx + 1)/\(turns.count)] (\(String(format: "%.2f", turn.startTime))s - \(String(format: "%.2f", turn.endTime))s, dur: \(String(format: "%.2f", turnDur))s, RTF: \(String(format: "%.3f", rtf))x)")
                 print("     HYP (Acoustic Mirror): \"\(snapped)\"")
                 print("     LIT (Raw CTC Greedy):  \"\(literal)\"")
                 print("     WHISPER (Dual ASR):    \"\(whisperTranscript)\"")
@@ -446,8 +365,8 @@ final class StreamingVoiceEvaluator {
 
                 turnRecords.append([
                     "turnIndex": turnIdx + 1,
-                    "startTime": turn.start,
-                    "endTime": turn.end,
+                    "startTime": turn.startTime,
+                    "endTime": turn.endTime,
                     "duration": turnDur,
                     "rtf": rtf,
                     "transcript": snapped,
@@ -534,7 +453,7 @@ final class StreamingVoiceEvaluator {
 
             let avgPronScore = session.overallPronunciationScore
 
-            print("\n3. Pronunciation Scoring Head (23-Feature GBDT):")
+            print("\n3. Pronunciation Scoring (HiPAMA-Lite Sequence Scorer + 19-Feature GBDT):")
             print("   - Overall Pronunciation Score:         \(avgPronScore)%")
             print("   - Total Words Evaluated:               \(totalScored)")
             print("   - Good Words (Score >= 65%):           \(goodWords.count) (\(String(format: "%.1f", Double(goodWords.count)/Double(max(1, totalScored))*100))%)")
@@ -585,60 +504,68 @@ final class StreamingVoiceEvaluator {
             print("\n5. Silent Background Learner Voice Profile:")
             print("   - \(profileSummary)")
 
-            // 6. Foundation Model Evaluation (AI Coach with Local Gemma 4B / Ollama)
-            print("\n6. Foundation Model AI Coaching Evaluation:")
-            let coachService = await MainActor.run { CoachingSessionService() }
-            let tCoach0 = CFAbsoluteTimeGetCurrent()
-            await coachService.startReport(record: session)
-            let elapsedCoach = CFAbsoluteTimeGetCurrent() - tCoach0
+            var drillsCount = 0
+            var clipsCount = 0
 
-            let report = await MainActor.run { coachService.reportText }
-            let drills = await MainActor.run { coachService.activeDrills }
-            let fluencyDrills = await MainActor.run { coachService.activeFluencyDrills }
-            let clips = await MainActor.run { coachService.generatedClips }
-            let coachError = await MainActor.run { coachService.reportError }
+            if ProcessInfo.processInfo.environment["EVAL_SKIP_COACH"] != "1" {
+                // 6. Foundation Model Evaluation (AI Coach with Local Gemma 4B / Ollama)
+                print("\n6. Foundation Model AI Coaching Evaluation:")
+                let coachService = await MainActor.run { CoachingSessionService() }
+                let tCoach0 = CFAbsoluteTimeGetCurrent()
+                await coachService.startReport(record: session)
+                let elapsedCoach = CFAbsoluteTimeGetCurrent() - tCoach0
 
-            if let err = coachError {
-                print("   [ERROR] Coach Report Failed: \(err)")
-            } else {
-                print("   [COACH DIAGNOSTIC REPORT] (Generated in \(String(format: "%.2fs", elapsedCoach))):")
-                print("   -------------------------------------------------------------------------")
-                let reportLines = report.components(separatedBy: .newlines)
-                for line in reportLines.prefix(25) {
-                    print("   \(line)")
-                }
-                if reportLines.count > 25 {
-                    print("   ... [truncated \(reportLines.count - 25) lines] ...")
-                }
-                print("   -------------------------------------------------------------------------")
+                let report = await MainActor.run { coachService.reportText }
+                let drills = await MainActor.run { coachService.activeDrills }
+                let fluencyDrills = await MainActor.run { coachService.activeFluencyDrills }
+                let clips = await MainActor.run { coachService.generatedClips }
+                let coachError = await MainActor.run { coachService.reportError }
 
-                print("   Active Pronunciation Drills Created: \(drills.count)")
-                for d in drills {
-                    print("     - Target: '\(d.targetWord)' (phone: [\(d.focusPhoneme ?? "none")]) | Sentence: \"\(d.practiceSentence)\"")
-                    print("       Tip: \(d.articulatoryTip ?? "none")")
-                }
+                drillsCount = drills.count
+                clipsCount = clips.count
 
-                print("   Active Fluency Drills Created: \(fluencyDrills.count)")
-                for fd in fluencyDrills {
-                    print("     - Target Phrase: \"\(fd.targetPhrase)\" | Pacing Tip: \(fd.pacingTip)")
-                }
+                if let err = coachError {
+                    print("   [ERROR] Coach Report Failed: \(err)")
+                } else {
+                    print("   [COACH DIAGNOSTIC REPORT] (Generated in \(String(format: "%.2fs", elapsedCoach))):")
+                    print("   -------------------------------------------------------------------------")
+                    let reportLines = report.components(separatedBy: .newlines)
+                    for line in reportLines.prefix(25) {
+                        print("   \(line)")
+                    }
+                    if reportLines.count > 25 {
+                        print("   ... [truncated \(reportLines.count - 25) lines] ...")
+                    }
+                    print("   -------------------------------------------------------------------------")
 
-                print("   Corrective Golden Speaker Clips Synthesized: \(clips.count)")
-                for (word, clipURL) in clips {
-                    print("     - '\(word)' -> \(clipURL.lastPathComponent)")
-                }
+                    print("   Active Pronunciation Drills Created: \(drills.count)")
+                    for d in drills {
+                        print("     - Target: '\(d.targetWord)' (phone: [\(d.focusPhoneme ?? "none")]) | Sentence: \"\(d.practiceSentence)\"")
+                        print("       Tip: \(d.articulatoryTip ?? "none")")
+                    }
 
-                // Interactive Multi-turn Follow-up
-                let userQuery = "Which specific consonant or vowel sound was my most frequent pronunciation error in this passage, and how should I position my tongue and mouth to fix it?"
-                print("\n   [INTERACTIVE FOLLOW-UP QUERY]")
-                print("   Learner: \"\(userQuery)\"")
-                let tChat0 = CFAbsoluteTimeGetCurrent()
-                await coachService.sendUserMessage(userQuery)
-                let elapsedChat = CFAbsoluteTimeGetCurrent() - tChat0
-                let chatHistory = await MainActor.run { coachService.chatHistory }
-                if let lastReply = chatHistory.last(where: { $0.role == .coach }) {
-                    print("   Coach (\(String(format: "%.2fs", elapsedChat))):")
-                    print("   \"\(lastReply.text)\"")
+                    print("   Active Fluency Drills Created: \(fluencyDrills.count)")
+                    for fd in fluencyDrills {
+                        print("     - Target Phrase: \"\(fd.targetPhrase)\" | Pacing Tip: \(fd.pacingTip)")
+                    }
+
+                    print("   Corrective Golden Speaker Clips Synthesized: \(clips.count)")
+                    for (word, clipURL) in clips {
+                        print("     - '\(word)' -> \(clipURL.lastPathComponent)")
+                    }
+
+                    // Interactive Multi-turn Follow-up
+                    let userQuery = "Which specific consonant or vowel sound was my most frequent pronunciation error in this passage, and how should I position my tongue and mouth to fix it?"
+                    print("\n   [INTERACTIVE FOLLOW-UP QUERY]")
+                    print("   Learner: \"\(userQuery)\"")
+                    let tChat0 = CFAbsoluteTimeGetCurrent()
+                    await coachService.sendUserMessage(userQuery)
+                    let elapsedChat = CFAbsoluteTimeGetCurrent() - tChat0
+                    let chatHistory = await MainActor.run { coachService.chatHistory }
+                    if let lastReply = chatHistory.last(where: { $0.role == .coach }) {
+                        print("   Coach (\(String(format: "%.2fs", elapsedChat))):")
+                        print("   \"\(lastReply.text)\"")
+                    }
                 }
             }
 
@@ -659,14 +586,30 @@ final class StreamingVoiceEvaluator {
                 "speechRate": sessionRate,
                 "articulationRate": articRate,
                 "profile": profileSummary,
-                "drillsCreated": drills.count,
-                "clipsSynthesized": clips.count,
+                "drillsCreated": drillsCount,
+                "clipsSynthesized": clipsCount,
                 "turns": turnRecords
             ])
         }
 
         print("\n================================================================================")
-        print("                 STREAMING VOICE EVALUATION COMPLETE                             ")
+        print("                 EXECUTIVE MULTI-SPEAKER AUDIT REPORT                           ")
+        print("================================================================================")
+        print("Speaker      | Dur(s) | Turns | V-WER    | STT Acc  | Pron Score  | Fluency | F0 / Auto Template")
+        print("------------------------------------------------------------------------------------------------------------------------")
+        for r in allSubjectResults {
+            let spk = (r["speaker"] as? String ?? "").padding(toLength: 12, withPad: " ", startingAt: 0)
+            let dur = r["audioDuration"] as? Double ?? 0.0
+            let turns = r["turnCount"] as? Int ?? 0
+            let vwer = r["vwer"] as? Double ?? 0.0
+            let acc = r["wordAccuracy"] as? Double ?? 0.0
+            let pron = r["pronunciationScore"] as? Int ?? 0
+            let flu = r["fluencyScore"] as? Int ?? 0
+            let prof = r["profile"] as? String ?? ""
+            let templatePart = prof.components(separatedBy: "Auto Template: ").last ?? prof
+            let line = String(format: "%@ | %5.1fs | %5d | %7.2f%% | %7.2f%% | %10d%% | %6d%% | %@", spk, dur, turns, vwer, acc, pron, flu, templatePart)
+            print(line)
+        }
         print("================================================================================\n")
         exit(0)
     }

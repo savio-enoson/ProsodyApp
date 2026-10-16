@@ -30,6 +30,23 @@ class PhonemeScoringService {
         guard let phonemeEngine = inferenceEngine.phonemeEngine else {
             return nil
         }
+
+        // Defensive normalization: Ensure userSegments are chunk-relative (offset = 0.0)
+        let chunkDuration = Double(audioChunk.count) / 16000.0
+        let effectiveUserSegments: [WordTimestamp]
+        if let first = userSegments.first, first.startTime > 2.0 && first.startTime >= chunkDuration * 0.5 {
+            let offset = first.startTime
+            effectiveUserSegments = userSegments.map {
+                WordTimestamp(
+                    word: $0.word,
+                    startTime: max(0.0, $0.startTime - offset),
+                    duration: $0.duration,
+                    alignmentScore: $0.alignmentScore
+                )
+            }
+        } else {
+            effectiveUserSegments = userSegments
+        }
         
         guard let userLogits = inferenceEngine.extractPhonemeLogits(audioChunk: audioChunk) else {
             return nil
@@ -65,11 +82,25 @@ class PhonemeScoringService {
         
         // Target 1: US English (Espeak US Dialect)
         let usWordPhonemes = EspeakManager.shared.getPhonemesDetailed(for: effectiveReference, dialect: .us)
-        let usTargets = usWordPhonemes.flatMap { $0.phonemes }
+        let usTargets = usWordPhonemes.flatMap { wp -> [String] in
+            guard let sIdx = wp.primaryStressIndex, sIdx < wp.phonemes.count else {
+                return wp.phonemes
+            }
+            var phones = wp.phonemes
+            phones[sIdx] = "ˈ" + phones[sIdx]
+            return phones
+        }
         
         // Target 2: UK English (Espeak)
         let ukWordPhonemes = EspeakManager.shared.getPhonemesDetailed(for: effectiveReference, dialect: .generic)
-        let ukTargets = ukWordPhonemes.flatMap { $0.phonemes }
+        let ukTargets = ukWordPhonemes.flatMap { wp -> [String] in
+            guard let sIdx = wp.primaryStressIndex, sIdx < wp.phonemes.count else {
+                return wp.phonemes
+            }
+            var phones = wp.phonemes
+            phones[sIdx] = "ˈ" + phones[sIdx]
+            return phones
+        }
         
         var sentenceUSPhoneScores: [PhoneScore]? = nil
         var sentenceUKPhoneScores: [PhoneScore]? = nil
@@ -101,7 +132,6 @@ class PhonemeScoringService {
         }
         
         let literalWords = parseWords(literalTranscript)
-        let snappedWords = parseWords(snappedTranscript)
         let sfSpeechWords = parseWords(sfSpeechTranscript)
         let whisperWords = parseWords(whisperTranscript)
         let displayWords = parseWords(transcript)
@@ -113,12 +143,11 @@ class PhonemeScoringService {
         let alignedWhisperMap = !whisperWords.isEmpty ? DiscrepancyEngine.alignWords(targetWords: refWordsList, streamWords: whisperWords) : [:]
         let allLiteralWordsSet = Set(literalWords.map { DiscrepancyEngine.cleanWord($0) })
         let allSFSpeechWordsSet = Set(sfSpeechWords.map { DiscrepancyEngine.cleanWord($0) })
-        let allWhisperWordsSet = Set(whisperWords.map { DiscrepancyEngine.cleanWord($0) })
         
         let usWordExpectedPhonemes = usWordPhonemes.map { $0.phonemes }
         let heardWordPhonemesMap = PhonemeWordAligner.partitionHeardPhonemes(
             words: usWordPhonemes.map { $0.word },
-            wordTimings: userSegments,
+            wordTimings: effectiveUserSegments,
             heardPhonemes: heardPhonemesWithFrames,
             expectedWordPhonemes: usWordExpectedPhonemes
         )
@@ -145,10 +174,10 @@ class PhonemeScoringService {
         var lastTtsSegmentIdx = 0
         
         let ctcConfFeatures: [Int: CTCConfidenceFeatures.WordConfidenceFeatures]
-        if let logProbs = sttLogProbs, !userSegments.isEmpty {
+        if let logProbs = sttLogProbs, !effectiveUserSegments.isEmpty {
             ctcConfFeatures = CTCConfidenceFeatures.computePerWord(
                 logProbs: logProbs,
-                wordTimestamps: userSegments,
+                wordTimestamps: effectiveUserSegments,
                 topBeams: inferenceEngine.latestTopBeams
             )
         } else {
@@ -168,17 +197,17 @@ class PhonemeScoringService {
             // Find matched alignment segment for user audio (matching target or displayed token)
             var matchedUserSegment: WordTimestamp? = nil
             var matchedUserSegmentIdx: Int? = nil
-            for j in lastUserSegmentIdx..<userSegments.count {
-                let segWord = userSegments[j].word.lowercased().trimmingCharacters(in: .punctuationCharacters)
+            for j in lastUserSegmentIdx..<effectiveUserSegments.count {
+                let segWord = effectiveUserSegments[j].word.lowercased().trimmingCharacters(in: .punctuationCharacters)
                 if segWord == wordLower || segWord == displayLower {
-                    matchedUserSegment = userSegments[j]
+                    matchedUserSegment = effectiveUserSegments[j]
                     matchedUserSegmentIdx = j
                     lastUserSegmentIdx = j + 1
                     break
                 }
             }
-            if matchedUserSegment == nil && i < userSegments.count {
-                matchedUserSegment = userSegments[i]
+            if matchedUserSegment == nil && i < effectiveUserSegments.count {
+                matchedUserSegment = effectiveUserSegments[i]
                 matchedUserSegmentIdx = i
             }
             
@@ -383,6 +412,20 @@ class PhonemeScoringService {
             let phoneticMatchRatio: Float = min(1.0, max(0.0, phoneticMatchCount / totalExpectedPhones))
             let isChildVal: Float = isChild ? 1.0 : 0.0
 
+            let wordPitchZcr: Float = {
+                guard let seg = matchedUserSegment, audioChunk.count > 1 else { return pitchZcr }
+                let startSample = max(0, Int(seg.startTime * 16000))
+                let endSample = min(audioChunk.count, Int((seg.startTime + seg.duration) * 16000))
+                guard endSample > startSample + 1 else { return pitchZcr }
+                var crossings = 0
+                for k in (startSample + 1)..<endSample {
+                    if (audioChunk[k] >= 0 && audioChunk[k - 1] < 0) || (audioChunk[k] < 0 && audioChunk[k - 1] >= 0) {
+                        crossings += 1
+                    }
+                }
+                return Float(crossings) / Float(endSample - startSample)
+            }()
+
             let featureVector: [Float] = [
                 baseGOP,
                 minPhone,
@@ -406,17 +449,23 @@ class PhonemeScoringService {
                 phoneticInsCount,
                 phoneticMatchRatio,
                 isChildVal,
-                pitchZcr
+                wordPitchZcr
             ]
 
             var finalAvgScore: Int
             var wordStatus: PronunciationStatus
             
             if LearnedScoringEngine.shared.isReady {
-                let pred = LearnedScoringEngine.shared.predictScore(features: featureVector)
-                finalAvgScore = Int(min(100.0, max(0.0, round(Double(pred) * 10.0))))
-                let passingCutoff = STTSettings.currentPassingThreshold
-                wordStatus = finalAvgScore >= passingCutoff ? .good : (finalAvgScore >= 40 ? .needsWork : .incorrect)
+                if let seqPred = LearnedScoringEngine.shared.predictSequenceScore(phones: wordPhoneScores, wordFeatures: featureVector) {
+                    finalAvgScore = Int(min(100.0, max(0.0, round(Double(seqPred.score) * 10.0))))
+                    let passingCutoff = STTSettings.currentPassingThreshold
+                    wordStatus = (!seqPred.isError && finalAvgScore >= passingCutoff) ? .good : (finalAvgScore >= 40 ? .needsWork : .incorrect)
+                } else {
+                    let pred = LearnedScoringEngine.shared.predictScore(features: featureVector)
+                    finalAvgScore = Int(min(100.0, max(0.0, round(Double(pred) * 10.0))))
+                    let passingCutoff = STTSettings.currentPassingThreshold
+                    wordStatus = finalAvgScore >= passingCutoff ? .good : (finalAvgScore >= 40 ? .needsWork : .incorrect)
+                }
             } else {
                 finalAvgScore = discrepancy.score
                 wordStatus = discrepancy.status
@@ -445,7 +494,8 @@ class PhonemeScoringService {
                 scoringReferenceWord: wpUS.word
             )
             
-            let isWordUncertain = !userVerified && sttEval.isUncertain
+            let isIntentSubstitution = !userVerified && (wpUS.word.lowercased() != displayWord.lowercased()) && (scoringReference != nil)
+            let isWordUncertain = !userVerified && sttEval.isUncertain && !isIntentSubstitution
             if isWordUncertain {
                 wordStatus = .uncertainTranscription
             } else if sttEval.category == .preservedGrammarVariation {
@@ -615,21 +665,28 @@ extension PhonemeScoringService {
         }
         
         return zip(sentenceScores, sliced).map { sent, sl in
-            let bestScore = max(sent.gopScore, sl.gopScore)
+            let combinedScore = 0.60 * sl.gopScore + 0.40 * sent.gopScore
             let resolvedError: ErrorType
-            if bestScore >= 0.70 {
-                // Confident acoustic evidence in at least one resolution
-                resolvedError = .none
-            } else if bestScore < 0.50 {
-                // Poor acoustic evidence across both resolutions; flag structural error if either detected one
+            if combinedScore >= 0.70 {
+                if case .substitution = sl.errorType, sl.topCompetitorMass > sl.targetMass * 2.0 {
+                    resolvedError = sl.errorType
+                } else if case .substitution = sent.errorType, sent.topCompetitorMass > sent.targetMass * 2.0 {
+                    resolvedError = sent.errorType
+                } else {
+                    resolvedError = .none
+                }
+            } else if combinedScore < 0.50 {
                 if sl.errorType != .none {
                     resolvedError = sl.errorType
                 } else {
                     resolvedError = sent.errorType
                 }
             } else {
-                // Ambiguous range [0.50, 0.70): require agreement
-                resolvedError = (sent.errorType != .none && sl.errorType != .none) ? sl.errorType : .none
+                if sl.errorType != .none {
+                    resolvedError = sl.errorType
+                } else {
+                    resolvedError = sent.errorType
+                }
             }
             let bestTargetMass = max(sent.targetMass, sl.targetMass)
             let minCompMass = min(sent.topCompetitorMass, sl.topCompetitorMass)
@@ -637,7 +694,7 @@ extension PhonemeScoringService {
             let compSym = sent.topCompetitorMass >= sl.topCompetitorMass ? sent.topCompetitorSymbol : sl.topCompetitorSymbol
             return PhoneScore(
                 symbol: sent.symbol,
-                gopScore: bestScore,
+                gopScore: combinedScore,
                 frames: max(sent.frames, sl.frames),
                 errorType: resolvedError,
                 phoneMargin: max(sent.phoneMargin, sl.phoneMargin),

@@ -6,7 +6,7 @@ import Combine
 @MainActor
 final class SettingsViewModel: ObservableObject {
     let settings = STTSettings.shared
-    let whisperService = WhisperSTTService.shared
+    let nemotronService = NemotronSTTService.shared
     let ollamaService = OllamaService.shared
     let interests = InterestsStore.shared
 

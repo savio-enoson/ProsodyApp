@@ -29,8 +29,13 @@ struct CoachingChatView: View {
             inputBar
         }
         .frame(minWidth: 640, minHeight: 520)
+        .task {
+            if coach.reportText.isEmpty && !coach.isGeneratingReport {
+                await coach.startReport(record: record)
+            }
+        }
         .onDisappear {
-            coach.endSession()
+            tts.stopAllPlayback()
         }
     }
 
@@ -193,9 +198,9 @@ struct CoachingChatView: View {
                 RoundedRectangle(cornerRadius: Catalyst.Radius.md)
                     .fill(Color.secondary.opacity(0.06))
                     .overlay(
-                        RoundedRectangle(cornerRadius: Catalyst.Radius.md)
-                            .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
-                    )
+                    RoundedRectangle(cornerRadius: Catalyst.Radius.md)
+                        .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
+                )
             )
         }
     }

@@ -36,12 +36,6 @@ nonisolated class DiscrepancyEngine {
             return .sfSpeechOnly
         }
 
-        let isClusterOnsetMatch = (!cleanLit.isEmpty && isClusterOnsetSubstitution(target: cleanTarget, candidate: cleanLit)) ||
-            allLiteralWords.contains(where: { isClusterOnsetSubstitution(target: cleanTarget, candidate: $0) }) ||
-            (!cleanSF.isEmpty && isClusterOnsetSubstitution(target: cleanTarget, candidate: cleanSF)) ||
-            allSFSpeechWords.contains(where: { isClusterOnsetSubstitution(target: cleanTarget, candidate: $0) }) ||
-            hasPhoneticClusterOnsetShift(alignedPhonemes: alignedPhonemes)
-
         let hasExactLiteral: Bool = {
             if !cleanLit.isEmpty {
                 return matchesWord(target: cleanTarget, candidate: cleanLit)

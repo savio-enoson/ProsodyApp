@@ -3,7 +3,7 @@ import Combine
 
 public enum STTEngineType: String, CaseIterable, Identifiable, Codable {
     case acousticMirror = "acousticMirror"
-    case whisperKit = "whisperKit"
+    case nemotron = "nemotron"
     
     public var id: String { rawValue }
     
@@ -11,8 +11,8 @@ public enum STTEngineType: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .acousticMirror:
             return "Acoustic Mirror (Wav2Vec2)"
-        case .whisperKit:
-            return "WhisperKit (Neural ASR)"
+        case .nemotron:
+            return "Nemotron 3.5 Streaming (Core AI)"
         }
     }
     
@@ -20,8 +20,8 @@ public enum STTEngineType: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .acousticMirror:
             return "Raw acoustic subword beam search with lexicon trie constraints. Shows exact grammatical and phonetic stumbles."
-        case .whisperKit:
-            return "High-accuracy neural end-to-end ASR. Robust against non-native accents to establish the intended target words."
+        case .nemotron:
+            return "Direct Core AI streaming ASR (320ms latency) with native punctuation, capitalization, and word timestamps."
         }
     }
 }
@@ -190,11 +190,16 @@ public class STTSettings: ObservableObject {
     }
     
     public init() {
-        if let savedEngine = UserDefaults.standard.string(forKey: engineKey),
-           let engine = STTEngineType(rawValue: savedEngine) {
-            self.engineType = engine
+        if let savedEngine = UserDefaults.standard.string(forKey: engineKey) {
+            if savedEngine == "whisperKit" || savedEngine == "nemotron" {
+                self.engineType = .nemotron
+            } else if let engine = STTEngineType(rawValue: savedEngine) {
+                self.engineType = engine
+            } else {
+                self.engineType = .nemotron
+            }
         } else {
-            self.engineType = .acousticMirror
+            self.engineType = .nemotron
         }
         
         if let savedModel = UserDefaults.standard.string(forKey: modelKey),

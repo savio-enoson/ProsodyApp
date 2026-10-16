@@ -3,7 +3,7 @@ import CoreML
 
 /// On-device CoreML runtime engine executing the trained FluencyScorer GBDT.
 /// Thread-safe singleton providing sub-millisecond continuous fluency prediction.
-final class LearnedFluencyEngine: @unchecked Sendable {
+nonisolated final class LearnedFluencyEngine: @unchecked Sendable {
     static let shared = LearnedFluencyEngine()
     
     private var model: MLModel? = nil

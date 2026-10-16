@@ -10,7 +10,7 @@ final class STTManager: ObservableObject {
     
     // Internal engines
     let inference: InferenceEngine
-    let whisperService = WhisperSTTService.shared
+    let nemotronService = NemotronSTTService.shared
     let settings = STTSettings.shared
     
     // Decoding components
@@ -126,10 +126,10 @@ final class STTManager: ObservableObject {
     /// Asynchronous pipeline processing based on active engine setting
     func transcribe(audioFloats: [Float]) async throws -> (transcript: String, literal: String, wordTimings: [WordTimestamp]) {
         switch settings.engineType {
-        case .whisperKit:
-            let whisper = try await whisperService.transcribe(audioFloats: audioFloats)
+        case .nemotron:
+            let nemotron = try await nemotronService.transcribe(audioFloats: audioFloats)
             let literal = inference.latestLiteralTranscript
-            return (transcript: whisper.transcript, literal: literal, wordTimings: whisper.wordTimings)
+            return (transcript: nemotron.transcript, literal: literal, wordTimings: nemotron.wordTimings)
             
         case .acousticMirror:
             inference.process(audioChunk: audioFloats)
@@ -155,5 +155,8 @@ final class STTManager: ObservableObject {
     /// Prewarms the speech inference engine and underlying models.
     func prewarm() {
         _ = inference
+        Task {
+            await nemotronService.initializeIfNeeded()
+        }
     }
 }

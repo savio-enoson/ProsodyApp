@@ -1,6 +1,6 @@
 [
   {
-    "shortDescription" : "Learned STT Confidence Estimation Module (16 features) trained on SpeechOcean762",
+    "shortDescription" : "Learned STT Confidence Estimation Module (15 features) trained on SpeechOcean762",
     "metadataOutputVersion" : "3.0",
     "outputSchema" : [
       {
@@ -96,13 +96,6 @@
         "formattedType" : "Double",
         "type" : "Double",
         "name" : "blank_oscillation_rate",
-        "shortDescription" : ""
-      },
-      {
-        "isOptional" : "0",
-        "formattedType" : "Double",
-        "type" : "Double",
-        "name" : "phonetic_match_ratio",
         "shortDescription" : ""
       },
       {

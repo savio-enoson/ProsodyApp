@@ -80,9 +80,9 @@ enum TranscriptDiffEngine {
                 let conf = STTConfidenceEngine.evaluateWord(
                     word: w,
                     segment: seg,
-                    literalWords: [],
+                    literalWords: (literal ?? "").components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty },
                     whisperWords: [],
-                    sfSpeechWords: [],
+                    sfSpeechWords: (sfSpeech ?? "").components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty },
                     threshold: threshold
                 )
                 return TranscriptWord(
@@ -239,8 +239,7 @@ enum TranscriptDiffEngine {
             )
             
             resultWords[idx].confidence = evalResult.confidence
-            // Word is uncertain if confidence is below threshold OR if engines have an unconfirmed divergence
-            resultWords[idx].isUncertain = evalResult.isUncertain || (resultWords[idx].hasDifference && evalResult.confidence < 0.70)
+            resultWords[idx].isUncertain = !resultWords[idx].userVerified && evalResult.isUncertain
             
             var allCandidates = evalResult.candidates
             if let alt = resultWords[idx].alternative, !alt.isEmpty {

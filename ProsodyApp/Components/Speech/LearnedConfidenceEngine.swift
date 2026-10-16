@@ -28,22 +28,18 @@ final class LearnedConfidenceEngine: @unchecked Sendable {
         "mean_blank_prob",
         "max_nonblank_run",
         "blank_oscillation_rate",
-        "phonetic_match_ratio",
         "word_length",
         "is_function_word",
         "is_content_word",
         "word_duration_ms",
         "has_whisper_match",
         "has_sfspeech_match",
-        "consensus_veto"
-    ]
-    
-    static let featureNames16: [String] = featureNames15 + [
+        "consensus_veto",
         "beam_consensus"
     ]
     
     static var featureNames: [String] {
-        return featureNames16
+        return featureNames15
     }
     
     private let loaderQueue = DispatchQueue(label: "com.prosody.learnedconfidence.loader", qos: .userInitiated)
@@ -98,10 +94,9 @@ final class LearnedConfidenceEngine: @unchecked Sendable {
             lock.unlock()
             return 0.5
         }
-        let expectedCount = model.modelDescription.inputDescriptionsByName.count
         lock.unlock()
         
-        let activeNames: [String] = expectedCount == 16 ? LearnedConfidenceEngine.featureNames16 : LearnedConfidenceEngine.featureNames15
+        let activeNames: [String] = LearnedConfidenceEngine.featureNames15
         guard features.count >= activeNames.count else { return 0.5 }
         
         var featureDict: [String: MLFeatureValue] = [:]

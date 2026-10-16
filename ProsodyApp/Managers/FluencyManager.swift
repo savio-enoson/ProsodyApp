@@ -1,7 +1,7 @@
 import Foundation
 
 /// Standardized Manager singleton for speech fluency and temporal prosodic analysis.
-final class FluencyManager {
+nonisolated final class FluencyManager: Sendable {
     static let shared = FluencyManager()
     
     private init() {}

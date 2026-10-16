@@ -27,7 +27,7 @@ public enum TargetAccentDialect: String, CaseIterable, Identifiable, Codable, Se
 }
 
 /// Learner voice profile tracking on-device acoustic vocal timbre and fundamental pitch.
-public struct LearnerVoiceProfile: Codable, Sendable, Equatable {
+nonisolated public struct LearnerVoiceProfile: Codable, Sendable, Equatable {
     /// 128-dimensional acoustic style vector extracted by StyleEncoder.
     public var timbreEmbedding: [Float]
 
@@ -67,7 +67,7 @@ public struct LearnerVoiceProfile: Codable, Sendable, Equatable {
 }
 
 /// Outcome of intelligent base template voice matching.
-public struct VoiceTemplateMatch: Sendable, Equatable {
+nonisolated public struct VoiceTemplateMatch: Sendable, Equatable {
     public let voiceId: String
     public let displayName: String
     public let cosineSimilarity: Float

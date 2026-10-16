@@ -153,9 +153,6 @@ enum STTConfidenceEngine {
             return STTWordConfidence(word: word, confidence: 1.0, isUncertain: false, category: .correctPronunciation)
         }
         
-        // 1. Acoustic Alignment Confidence (from CTCSegmentation Viterbi path)
-        let rawAlign: Float = segment?.alignmentScore ?? 0.25
-        
         // 2. Cross-Engine Ensemble Consensus
         let hasWhisperEngine = !whisperWords.isEmpty || alignedWhisperWord != nil
         let hasSFEngine = !sfSpeechWords.isEmpty || alignedSFSpeechWord != nil
@@ -217,6 +214,9 @@ enum STTConfidenceEngine {
             return 0.10
         }()
         
+        // 1. Acoustic Alignment Confidence (from CTCSegmentation Viterbi path or literal match fallback)
+        let rawAlign: Float = segment?.alignmentScore ?? (cLiteralRaw >= 0.90 ? 0.70 : (cLiteralRaw >= 0.60 ? 0.50 : 0.25))
+        
         let isDropoutStream = hasWhisperEngine && hasSFEngine &&
             alignedWhisperWord == nil && alignedSFSpeechWord == nil &&
             cLiteralRaw >= 0.95 && rawAlign >= 0.80
@@ -243,8 +243,8 @@ enum STTConfidenceEngine {
         } else if hasSFEngine {
             cEnsemble = hasSFMatch ? 0.90 : (alignedSFSpeechWord == nil && cLiteralRaw >= 0.95 && rawAlign >= 0.80 ? 0.40 : 0.20)
         } else {
-            // Neither alternative engine was active or provided
-            cEnsemble = 0.50
+            // Neither alternative engine was active or provided (standalone mode)
+            cEnsemble = (cLiteralRaw >= 0.90 ? 0.75 : (cLiteralRaw >= 0.60 ? 0.55 : 0.35))
         }
         
         let lengthDampener: Float = {
@@ -334,9 +334,11 @@ enum STTConfidenceEngine {
 
         effectiveAlign *= (entropyPenalty * blankPenalty * oscillationPenalty)
         
-        // 4. Learned Confidence Estimation Module (CoreML CEM)
+        // 4. Confidence Estimation Module (CoreML CEM with Multi-Stream Heuristic Fallback)
         var finalConfidence: Float
         if useLearnedConfidenceHead && LearnedConfidenceEngine.shared.isReady {
+            let effectiveSFMatch: Float = (hasSFEngine ? hasSFMatch : hasWhisperMatch) ? 1.0 : 0.0
+            let effectiveWhisperMatch: Float = (hasWhisperEngine ? hasWhisperMatch : hasSFMatch) ? 1.0 : 0.0
             let cemFeatures: [Float] = [
                 effectiveAlign,
                 cEnsemble,
@@ -345,23 +347,30 @@ enum STTConfidenceEngine {
                 meanBlankProb ?? 0.0,
                 maxNonBlankRun.map { Float($0) } ?? blankStability ?? 0.0,
                 blankOscillationRate ?? 0.0,
-                phoneticMatchRatio ?? 0.0,
                 Float(clean.count),
                 isFunctionOrSight ? 1.0 : 0.0,
                 isFunctionOrSight ? 0.0 : 1.0,
                 Float((segment?.duration ?? 0.0) * 1000.0),
-                hasWhisperMatch ? 1.0 : 0.0,
-                hasSFMatch ? 1.0 : 0.0,
+                effectiveWhisperMatch,
+                effectiveSFMatch,
                 alternativeConsensusAgrees ? 1.0 : 0.0,
                 beamConsensus ?? 1.0
             ]
             let learned = LearnedConfidenceEngine.shared.predictConfidence(features: cemFeatures)
             finalConfidence = min(1.0, max(0.0, learned))
         } else {
-            finalConfidence = min(1.0, max(0.0, effectiveAlign))
-            if alternativeConsensusAgrees {
-                finalConfidence = min(finalConfidence, 0.35)
+            var composite = 0.40 * effectiveAlign + 0.35 * cEnsemble + 0.25 * effectiveLiteral
+            if (hasWhisperMatch && hasSFMatch) || (hasWhisperMatch && !hasSFEngine) || (hasSFMatch && !hasWhisperEngine) {
+                composite = max(0.85, composite)
+            } else if hasWhisperMatch && cLiteralRaw >= 0.70 {
+                composite = max(0.80, composite)
+            } else if cLiteralRaw >= 0.90 && rawAlign >= 0.40 {
+                composite = max(0.75, composite)
             }
+            if alternativeConsensusAgrees {
+                composite = min(composite, 0.35)
+            }
+            finalConfidence = min(1.0, max(0.0, composite))
         }
         
         let isUncertain = finalConfidence < threshold

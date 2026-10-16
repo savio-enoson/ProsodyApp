@@ -91,9 +91,9 @@ final class TTSManager: NSObject, ObservableObject, AVAudioRecorderDelegate, AVA
     }
 
     private func setupEngineObservation() {
+        updateEngineStatus()
+
         let engine = VoiceClonerNativeEngine.shared
-        self.isEngineReady = engine.isLoaded
-        self.engineStatusDetail = engine.statusMessage
 
         // Register reactive callback to eliminate periodic polling
         engine.onStatusChanged = { [weak self] isLoaded, message in

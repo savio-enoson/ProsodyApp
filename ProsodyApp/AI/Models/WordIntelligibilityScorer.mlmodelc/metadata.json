@@ -1,6 +1,6 @@
 [
   {
-    "shortDescription" : "Learned Word Intelligibility Scorer (23 features) trained on SpeechOcean762",
+    "shortDescription" : "Learned Word Intelligibility Scorer (19 features) trained on SpeechOcean762",
     "metadataOutputVersion" : "3.0",
     "outputSchema" : [
       {
@@ -116,34 +116,6 @@
         "formattedType" : "Double",
         "type" : "Double",
         "name" : "word_len_phones",
-        "shortDescription" : ""
-      },
-      {
-        "isOptional" : "0",
-        "formattedType" : "Double",
-        "type" : "Double",
-        "name" : "has_exact_literal",
-        "shortDescription" : ""
-      },
-      {
-        "isOptional" : "0",
-        "formattedType" : "Double",
-        "type" : "Double",
-        "name" : "has_sfspeech_match",
-        "shortDescription" : ""
-      },
-      {
-        "isOptional" : "0",
-        "formattedType" : "Double",
-        "type" : "Double",
-        "name" : "consensus_code",
-        "shortDescription" : ""
-      },
-      {
-        "isOptional" : "0",
-        "formattedType" : "Double",
-        "type" : "Double",
-        "name" : "word_dtw_distance",
         "shortDescription" : ""
       },
       {
